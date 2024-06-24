@@ -21,23 +21,12 @@ function HomePage() {
   const [display, setDisplay] = useState(<button onClick={getAssests}> Rent </button>);
 
 
-function getState(){
-  console.log(assetList)
-  console.log(enabledWallet)
-}
 
-  function handleClick(asset){
-    console.log(asset)
-    const dataToPass = { selectedAsset: asset };
+  async function handleClick(selectedAsset){   
+    console.log(selectedAsset)
+    //const dataToPass = { selectedAsset: asset };
   
-    history.push(`/rent`, dataToPass);    
-  }
-
-
-  async function grabWallets(walletName, rewardAddresses){
-    console.log("called")
-    setEnabledWallet(walletName)
-    setRewardAddress(rewardAddresses)
+    const rentPage = await history.push(`/rent`, selectedAsset);    
   }
   
 
@@ -82,9 +71,9 @@ function getState(){
         <div>
             <h6 >select an asset</h6>
             <div className='asset-space'>
-            {assets.map((assetName, index) => (
+            {assets.map((assetName,asset, index) => (
                 <div>
-                <button key={index} onClick={handleClick.bind(null, assets[index])}> {assetName} </button>
+                <button key={index} onClick={console.log("I got pushed")}> {assetName} </button>
                 <br></br>
                 </div>
             ))}
@@ -142,17 +131,19 @@ function getState(){
         <Chart />
         <br />      
       </div>
-      <button onClick={getState}>test</button> 
+
       {assetList !== null ? (
-        <div>
-          {getAssests.bind(null,assetList)}
-          <h6>select an asset</h6>
-          {assetList.map((asset, index) => (
-            <div>
-              <button onClick={handleClick.bind(null, asset[index])} key={index}> {asset.assetName} </button>
-            <br></br>
-            </div>
-          ))}
+        <div className='ticker-space'>
+          <h6>select an asset below</h6>
+          <div className='asset-space'>
+            {getAssests.bind(null,assetList)}
+            {assetList.map((asset, index) => (
+              <div className='asset-component'>
+                <button onClick={handleClick.bind(null, assetList[index])} key={index}> {asset.assetName} </button>
+              <br></br>
+              </div>
+            ))}
+          </div>
         </div>
       ) : (
         <button onClick={displayAssets}>Rent</button>

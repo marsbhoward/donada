@@ -5,7 +5,6 @@ import {
 } from 'react-router-dom';
 
 import HomePage from './containers/HomePage';
-import HomePageOld from './containers/HomePageOld';
 import OwnerRentPage from './containers/OwnerRentPage'
 
 import './App.css';
