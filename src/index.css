@@ -16,7 +16,7 @@ code {
     monospace;
 }
 
-.app{
+.App{
   height: 100vh;
   width: 100vw;
   overflow: hidden;
@@ -102,13 +102,18 @@ code {
 }
 
 /****************** asset **********************/
+.ticker-space{
+  overflow: scroll;
+  height: 100%;
+}
+
 .asset-component{
   height: 27vh;
-  overflow: scroll;
 }
 
 .asset-space{
-  overflow: scroll;
   display: grid;
-  grid-template-columns: 30% 30% 30%;
+  margin-left: 5%;
+  margin-right: 5%;
+  grid-template-columns: auto auto auto;
 }

@@ -4,18 +4,31 @@ import { useLocation } from 'react-router-dom';
 
 import { Browser } from '@marlowe.io/runtime-lifecycle';
 
-const OwnerRentPage = () => {
+const OwnerRentPage = (props) => {
     const location = useLocation();
-    const {selectedAsset} = location.state || {selectedAsset: 'No asset selected'}
-    console.log(selectedAsset)
-    
+    let selectedAsset  = null
+    location.state !== undefined?(
+        selectedAsset = location.state 
+    ):(
+        console.log("do that")
+    )
+  
+    function divClick () {
+        console.log(location.state)
+    }
     
     return (
         <div>
-            <h1>Asset To Rent</h1>
-            <h5>{selectedAsset.assetName}</h5>
-            <h5>{selectedAsset.fingerprint}</h5>
-            <h5>{selectedAsset.policyId}</h5>
+            {selectedAsset !== null ? (
+                <div className='ticker-space'>
+                    <h1 onClick={divClick}>Asset To Rent</h1>
+                    <h5>{selectedAsset.assetName}</h5>
+                    <h5>{selectedAsset.fingerprint}</h5>
+                    <h5>{selectedAsset.policyId}</h5>
+                </div>
+      ) : (
+        <h1>No asset selected</h1>
+      )}
         </div>
     );
 }
