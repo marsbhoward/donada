@@ -71,7 +71,7 @@ function HomePage() {
   return (
     <div>
     {selectedWallets !== null ? (
-      <div className='sign-in'>
+      <div className='header'>
         <h6>select a wallet</h6>
         {selectedWallets.map((name, index) => (
           <div>
@@ -81,10 +81,10 @@ function HomePage() {
         ))}
       </div>
     ) : (
-      <div className='sign-in'>
-        <div className='sign-in-section'></div>
-        <div className='sign-in-section'></div>
-        <div className='sign-in-section'>
+      <div className='header'>
+        <div className='header-section'></div>
+        <div className='header-section'></div>
+        <div className='header-section'>
           <button className='sign-in-button' onClick={displayWallets}>Connect Wallet</button>
         </div>
       </div>

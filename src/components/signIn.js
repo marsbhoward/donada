@@ -22,11 +22,11 @@ function SignIn(props){
               ))} 
             </div>
           ) : (
-            <div className='sign-in'>
-              <div className='sign-in-section'></div>
-              <div className='sign-in-section'></div>
-              <div className='sign-in-section'>
-                <button className='sign-in-button' onClick={props.displayWallets}>Connect Wallet</button>
+            <div className='header'>
+              <div className='header-section'></div>
+              <div className='header-section'></div>
+              <div className='header-section'>
+                <button className='header-button' onClick={props.displayWallets}>Connect Wallet</button>
               </div>
             </div>
           )}

@@ -4,6 +4,7 @@
   "private": true,
   "dependencies": {
     "@babel/plugin-transform-private-property-in-object": "^7.24.5",
+    "@blockfrost/blockfrost-js": "^5.5.0",
     "@emurgo/cardano-serialization-lib-browser": "^11.5.0",
     "@marlowe.io/adapter": "0.3.0-beta",
     "@marlowe.io/language-core-v1": "0.3.0-beta",
@@ -17,8 +18,10 @@
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
+    "axios": "^1.7.2",
     "marlowe-ts-sdk": "^0.2.0-alpha-21",
     "react": "^18.3.1",
+    "react-csv": "^2.2.2",
     "react-dom": "^18.3.1",
     "react-router-dom": "^5.3.4",
     "recharts": "^2.12.7",

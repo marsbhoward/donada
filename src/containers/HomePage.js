@@ -106,7 +106,7 @@ function HomePage() {
     <div className='container'>
       <div className='signInSection'>
         {selectedWallets !== null ? (
-            <div className='sign-in'>
+            <div className='header'>
               {selectedWallets.map((name, index) => (
                 <div >
                     <button key={index} onClick={connectWallet.bind(null, name)}>{name.toUpperCase()}</button>
@@ -116,10 +116,10 @@ function HomePage() {
               ))} 
             </div>
           ) : (
-            <div className='sign-in'>
-              <div className='sign-in-section'></div>
-              <div className='sign-in-section'></div>
-              <div className='sign-in-section'>
+            <div className='header'>
+              <div className='header-section'></div>
+              <div className='header-section'></div>
+              <div className='header-section'>
                 <button className='sign-in-button' onClick={displayWallets}>Connect Wallet</button>
               </div>
             </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import '../index.css';
+import {CSVLink, CSVDownload} from 'react-csv';
 
 import data24h from '../txnFiles/data24h.csv';
 import data7d from '../txnFiles/data7d.csv';
@@ -17,11 +18,14 @@ function App(){
   const [currentRentalPrice, setCurrentRentalPrice] = useState (null);
   const [jackpot, setJackpot] = useState (null);
   const [drawDate, setDrawDate] = useState (null)
+  const [currentDate, setCurrentDate] = useState (null)
 
   useEffect(() => {
+    console.log(getDate())
     /* THIS NEEDS TO BE WRITTEN TO A FILE WITH THE DATE AND 
     ONLY IF THE DATE IS DIFFERENT SEND THE REQUEST ** 
     MAYBE IF PRICE IS VERY DIFFERENT ~ 100-200 REQUEST WILL BE SENT
+    
     const fetchAdaPrice = async () => {
       try {
         const response = await fetch(
@@ -35,10 +39,15 @@ function App(){
       }
     };
     fetchAdaPrice();
-    */
+    
     load(data24h)
+    */
+   setCurrentDate (getDate())
   }, []); // Run only once on component mount
 
+const write = function(file){
+  
+}
 
 const load = function(file){
   async function fetchData() {
@@ -68,15 +77,24 @@ const load = function(file){
 
 
 function getDate(){
-  const currentDate = new Date();
-  const year = currentDate.getFullYear();
-  const month = String(currentDate.getMonth() + 1).padStart(2, '0'); // Months are zero-based
-  const day = String(currentDate.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const today = new Date()
+  const month = today.getMonth()+1;
+  const year = today.getFullYear();
+  const date = today.getDate();
+  const currentDate = month + "/" + date + "/" + year;
+  return currentDate;
 }
   
 
-  
+const headers = [
+  {label: "Date", key: "date"},
+  {label: "Price", key: "price"}
+]
+ 
+const csvData =[
+  [
+  {currentDate, jackpot}
+]]
  
     return (
     <div>
@@ -94,7 +112,7 @@ function getDate(){
       <div className="rental-info"> 
         <p className="rental-info-section">Next Draw Date: {drawDate}</p>
         <p className="rental-info-section">Current Rental Price: ${currentRentalPrice} </p>
-        <p className="rental-info-section">Current Jackpot: ${jackpot}</p>
+        <p className="rental-info-section">Current Jackpot: ~${jackpot}</p>
       </div> 
     </div> 
     );

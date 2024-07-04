@@ -22,7 +22,7 @@ code {
   overflow: hidden;
 }
 
-.sign-in{
+.header{
   height: 100%;
   position: sticky;
   display: grid;
@@ -45,7 +45,7 @@ code {
 }
 
 
-.sign-in-section{
+.header-section{
   width: 100%;
 }
 
@@ -103,8 +103,9 @@ code {
 
 /****************** asset **********************/
 .ticker-space{
-  overflow: scroll;
+  text-align: center;
   height: 100%;
+  
 }
 
 .asset-component{
@@ -116,4 +117,41 @@ code {
   margin-left: 5%;
   margin-right: 5%;
   grid-template-columns: auto auto auto;
+}
+
+
+/****************** rent **********************/
+.rent-page{
+  height: 90vh;
+  width: 100vw;
+  overflow: scroll;
+}
+
+.rent-container{
+  display: grid;
+  grid-template-columns: 100%;
+  height: 100%;
+}
+
+.rent-container-open{
+  display: grid;
+  grid-template-columns: 20% 80%;
+  height: 100%;  
+}
+
+.card-space{
+  display: grid;
+  grid-template-columns: 60% 40%;
+}
+
+.card-container{
+  height: 50vh;
+  width : 50vh;
+  display: inline-block;
+  background: black;
+}
+
+.sidecar-left{
+  background: black;
+  opacity: 50%;
 }
