@@ -270,7 +270,7 @@ function getAvailableWallets(): WalletInfo[] {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function NewHome() {
+export default function DonadaPlatform() {
   // Network (toggled in admin panel; defaults to Mainnet)
   const [network, setNetwork] = useState<Network>('Mainnet');
 
