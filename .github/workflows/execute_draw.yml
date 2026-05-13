@@ -1,0 +1,44 @@
+name: Execute Draw
+
+on:
+  schedule:
+    # Runs every 15 minutes. draw_script.ts self-guards using drawDates.csv —
+    # it exits immediately if the draw time has not been reached yet.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    # Manual trigger from the GitHub Actions UI (useful for testing).
+    inputs:
+      network:
+        description: 'Network'
+        required: true
+        default: 'Preview'
+        type: choice
+        options:
+          - Preview
+          - Mainnet
+
+jobs:
+  draw:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run draw script
+        run: npx tsx "claude code/draw_script.ts"
+        env:
+          NETWORK: ${{ github.event.inputs.network || 'Preview' }}
+          OWNER_SEED_PHRASE: ${{ secrets.OWNER_SEED_PHRASE }}
+          REACT_APP_BlockFrost_API_KEY_Preview: ${{ secrets.BLOCKFROST_API_KEY_PREVIEW }}
+          REACT_APP_BlockFrost_API_KEY_Mainnet: ${{ secrets.BLOCKFROST_API_KEY_MAINNET }}
+          PRIZE_LOVELACE: ${{ secrets.PRIZE_LOVELACE }}

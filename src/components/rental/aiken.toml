@@ -1,0 +1,18 @@
+name = "donada/rental"
+version = "0.0.0"
+compiler = "v1.1.15"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Aiken contracts for project 'donada/rental'"
+
+[repository]
+user = "donada"
+project = "rental"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.1.0"
+source = "github"
+
+[config]

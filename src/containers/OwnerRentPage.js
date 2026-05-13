@@ -1,5 +1,5 @@
 import { BrowserWallet } from '@meshsdk/core';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 //import { BlockFrostAPI } from '@blockfrost/blockfrost-js';
 import axios from 'axios';
@@ -22,10 +22,15 @@ const OwnerRentPage = (props) => {
         console.log("do that")
     )
 
+    useEffect(() => {
+        getAssetData(selectedAsset.policyId, selectedAsset.assetName)
+      }, []); // Empty dependency array ensures it runs only once on mount
+    
+
   
     function divClick () {
         console.log(location.state)
-        getAssetData(selectedAsset.policyId, selectedAsset.assetName)
+        
     }
 
     function strToHex (assetName) {
@@ -41,13 +46,6 @@ const OwnerRentPage = (props) => {
        const convertedAssetName = strToHex(assetAssetName)
 
        const httpString = "https://cardano-mainnet.blockfrost.io/api/v0/assets/"+ assetPolicyId + convertedAssetName
-
-
-       //'curl -H "project_id: $PROJECT_ID" https://cardano-mainnet.blockfrost.io/api/v0/blocks/latest'
-       
-        console.log(httpString);
-
-
         
         try{
             const response = await axios.get(httpString,{

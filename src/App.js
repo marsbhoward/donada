@@ -1,26 +1,18 @@
-import React, { Component } from 'react';
-import {
-  BrowserRouter as Router,
-  Route
-} from 'react-router-dom';
-
-import HomePage from './containers/HomePage';
-import OwnerRentPage from './containers/OwnerRentPage'
-
-import './App.css';
-
+import React from 'react';
+import {BrowserRouter as Router, Route, Switch} from 'react-router-dom';
+import NewHome2 from './containers/NewHome2';
+import './App2.css';
 
 function App() {
   return (
     <div className="App">
-      <header className="App-header">
       <Router>
-        <div>
-          <Route exact path="/" render={() => <div><HomePage/> </div>}/>
-          <Route exact path="/Rent" render={() => <div><OwnerRentPage/> </div>}/>
-        </div>
+        <Switch>
+          <Route exact path="/">
+            <NewHome2 />
+          </Route>
+        </Switch>
       </Router>
-      </header>
     </div>
   );
 }
