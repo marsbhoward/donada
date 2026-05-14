@@ -29,8 +29,12 @@
 import { Lucid, Blockfrost, Data, UTxO } from "lucid-cardano";
 import type { ProtocolParameters } from "lucid-cardano";
 import { readFileSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { createHash } from "crypto";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = dirname(__filename);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
