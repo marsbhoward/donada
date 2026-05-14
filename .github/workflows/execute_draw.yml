@@ -5,9 +5,9 @@ env:
 
 on:
   schedule:
-    # Runs once a day at 11:30 AM CST (17:30 UTC). draw_script.ts self-guards using drawDates.csv —
+    # Runs once a day at 12:05 PM CST (18:05 UTC). draw_script.ts self-guards using drawDates.csv —
     # it exits immediately if the draw time has not been reached yet.
-    - cron: '30 17 * * *'
+    - cron: '5 18 * * *'
   workflow_dispatch:
     # Manual trigger from the GitHub Actions UI (useful for testing).
     inputs:
@@ -31,7 +31,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
