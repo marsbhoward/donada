@@ -274,7 +274,7 @@ async function main() {
   console.log(`Asset ID:       ${winner.assetId ?? '(wallet entry)'}`);
 
   // Step 6 — Payout
-  const prizeLovelace = BigInt(process.env.PRIZE_LOVELACE ?? '0');
+  const prizeLovelace = BigInt((process.env.PRIZE_LOVELACE ?? '').replace(/^["']|["']$/g, '').trim() || '0');
   if (prizeLovelace === 0n) throw new Error('PRIZE_LOVELACE env var not set or zero.');
 
   const activeRenter = winner.source === 'rental' ? (winner.rental.datum.renter ?? null) : null;
