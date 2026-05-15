@@ -228,8 +228,10 @@ async function main() {
   console.log(`Total pool:       ${allParticipants.length}`);
 
   // Step 4 — Entropy from block at draw timestamp
-  const genesis = await blockfrostGet<{ system_start: string; slot_length: number }>('/genesis');
-  const systemStartMs = new Date(genesis.system_start).getTime();
+  const genesis = await blockfrostGet<{ system_start: number | string; slot_length: number }>('/genesis');
+  const systemStartMs = typeof genesis.system_start === 'number'
+    ? genesis.system_start * 1000
+    : new Date(genesis.system_start).getTime();
   const drawSlot = Math.floor((scheduled.date.getTime() - systemStartMs) / (genesis.slot_length * 1000));
   console.log(`Draw slot: ${drawSlot}`);
 
