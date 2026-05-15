@@ -336,7 +336,7 @@ function getAvailableWallets(): WalletInfo[] {
 
 export default function DonadaPlatform() {
   // Network (toggled in admin panel; defaults to Mainnet)
-  const [network, setNetwork] = useState<Network>('Mainnet');
+  const [network, setNetwork] = useState<Network>('Preview');
 
   // Draw date / countdown
   const [nextDrawDate, setNextDrawDate] = useState<Date | null>(null);
