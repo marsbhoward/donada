@@ -39,7 +39,7 @@ const __dirname  = dirname(__filename);
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const NETWORK  = (process.env.NETWORK ?? 'Preview') as 'Preview' | 'Mainnet';
-const SEED     = process.env.OWNER_SEED_PHRASE ?? '';
+const SEED     = (process.env.OWNER_SEED_PHRASE ?? '').replace(/^["']|["']$/g, '').replace(/\s+/g, ' ').trim();
 
 const BLOCKFROST_URL = NETWORK === 'Preview'
   ? 'https://cardano-preview.blockfrost.io/api/v0'
@@ -175,6 +175,7 @@ async function blockfrostGet<T>(path: string): Promise<T> {
 
 async function main() {
   if (!SEED) throw new Error('OWNER_SEED_PHRASE is not set.');
+  console.log(`Seed word count: ${SEED.split(' ').length}`);
 
   // Step 1 — Check draw date
   const scheduled = loadScheduledDraw();
