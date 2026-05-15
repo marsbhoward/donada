@@ -335,7 +335,7 @@ export default function DonadaPlatform() {
           if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
           if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
           const planned = plannedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
-          return { date: new Date(year, month - 1, day, hour, minute), planned };
+          return { date: new Date(Date.UTC(year, month - 1, day, hour + 6, minute)), planned };
         };
 
         const allRows = lines
