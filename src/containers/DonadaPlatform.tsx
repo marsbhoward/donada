@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import RentModal from '../components/RentModal';
 import { BrowserWallet } from '@meshsdk/core';
 import { fetchNftMetadata } from '../utils/nftMetadata';
-import { Lucid, Blockfrost, fromText, Data, UTxO, C, applyDoubleCborEncoding, fromHex, ProtocolParameters } from 'lucid-cardano';
+import { Lucid, Blockfrost, fromText, toText, Data, Constr, UTxO, C, applyDoubleCborEncoding, fromHex, ProtocolParameters } from 'lucid-cardano';
 
 // ── Contract constants ────────────────────────────────────────────────────────
 
@@ -53,8 +53,9 @@ interface WalletInfo {
 }
 
 interface ConnectedWalletState {
-  name: string; // wallet key used with window.cardano and BrowserWallet.enable
+  name: string;
   wallet: BrowserWallet;
+  api: unknown; // enabled CIP-30 API passed to lucid.selectWallet()
 }
 
 interface NftAsset {
@@ -119,17 +120,82 @@ async function initLucid(network: Network): Promise<Lucid> {
 
 // ── Datum helpers (shared by listing and rental flows) ────────────────────────
 
-function encodeDatum(datum: RentalDatum): string {
-  // TODO: replace with Data.to(RentalDatum.toData(datum)) using compiled Aiken blueprint types.
-  return Data.to(datum as unknown as Data);
+// Converts a bech32 address to the Plutus Constr representation that Aiken
+// expects for the Address type: Constr(0, [PaymentCredential, Option<StakeCredential>])
+function addressToData(lucid: Lucid, address: string): Constr<Data> {
+  const { paymentCredential, stakeCredential } = lucid.utils.getAddressDetails(address);
+  if (!paymentCredential) throw new Error(`No payment credential in address: ${address}`);
+
+  const paymentData = paymentCredential.type === 'Key'
+    ? new Constr(0, [paymentCredential.hash])
+    : new Constr(1, [paymentCredential.hash]);
+
+  const stakeData = stakeCredential
+    ? new Constr(0, [new Constr(0, [
+        stakeCredential.type === 'Key'
+          ? new Constr(0, [stakeCredential.hash])
+          : new Constr(1, [stakeCredential.hash])
+      ])])
+    : new Constr(1, []);
+
+  return new Constr(0, [paymentData, stakeData]);
 }
 
-function decodeDatum(utxo: UTxO): RentalDatum {
-  if (!utxo.datum) {
-    throw new Error(`UTXO ${utxo.txHash}#${utxo.outputIndex} has no inline datum.`);
+// Converts a decoded Plutus Address Constr back to a bech32 address string.
+function dataToAddress(lucid: Lucid, data: Data): string {
+  const constr = data as Constr<Data>;
+  const paymentConstr = constr.fields[0] as Constr<Data>;
+  const stakeConstr   = constr.fields[1] as Constr<Data>;
+
+  const paymentHash = paymentConstr.fields[0] as string;
+  const paymentCred = paymentConstr.index === 0
+    ? { type: 'Key' as const,    hash: paymentHash }
+    : { type: 'Script' as const, hash: paymentHash };
+
+  let stakeCred: { type: 'Key' | 'Script'; hash: string } | undefined;
+  if (stakeConstr.index === 0) {
+    const inner = (stakeConstr.fields[0] as Constr<Data>).fields[0] as Constr<Data>;
+    stakeCred = inner.index === 0
+      ? { type: 'Key' as const,    hash: inner.fields[0] as string }
+      : { type: 'Script' as const, hash: inner.fields[0] as string };
   }
-  // TODO: replace with compiled Aiken blueprint typed decoder.
-  return Data.from(utxo.datum) as unknown as RentalDatum;
+
+  return lucid.utils.credentialToAddress(paymentCred, stakeCred);
+}
+
+function encodeDatum(datum: RentalDatum, lucid: Lucid): string {
+  return Data.to(
+    new Constr(0, [
+      datum.nft_policy,
+      fromText(datum.nft_asset_name),
+      addressToData(lucid, datum.owner),
+      datum.renter !== null
+        ? new Constr(0, [addressToData(lucid, datum.renter)])
+        : new Constr(1, []),
+      datum.rental_fee,
+      datum.draw_date,
+      addressToData(lucid, datum.project_wallet),
+    ])
+  );
+}
+
+function decodeDatum(utxo: UTxO, lucid: Lucid): RentalDatum {
+  if (!utxo.datum) throw new Error(`UTxO ${utxo.txHash}#${utxo.outputIndex} has no inline datum.`);
+  const constr = Data.from(utxo.datum) as Constr<Data>;
+  const f = constr.fields;
+
+  const renterConstr = f[3] as Constr<Data>;
+  const renter = renterConstr.index === 0 ? dataToAddress(lucid, renterConstr.fields[0]) : null;
+
+  return {
+    nft_policy:     f[0] as string,
+    nft_asset_name: toText(f[1] as string),
+    owner:          dataToAddress(lucid, f[2]),
+    renter,
+    rental_fee:     f[4] as bigint,
+    draw_date:      f[5] as bigint,
+    project_wallet: dataToAddress(lucid, f[6]),
+  };
 }
 
 // ── Listing helpers (owner lists their NFT) ───────────────────────────────────
@@ -164,7 +230,7 @@ async function submitListing(
     .newTx()
     .payToContract(
       contractAddress,
-      { inline: encodeDatum(datum) },
+      { inline: encodeDatum(datum, lucid) },
       {
         lovelace: BigInt(2000000),
         [DONADA_POLICY_ID + fromText(nft_asset_name)]: BigInt(1),
@@ -189,11 +255,9 @@ async function fetchRentalUtxo(nftAssetName: string, contractAddress: string, lu
   return utxos[0];
 }
 
-function buildRentRedeemer(renterAddress: string): string {
-  // TODO: replace with compiled Aiken RentalRedeemer::Rent encoder.
-  return Data.to(
-    { Rent: { renter_address: renterAddress } } as unknown as Data
-  );
+function buildRentRedeemer(renterAddress: string, lucid: Lucid): string {
+  // RentalRedeemer::Rent is index 1 in the Aiken enum: Constr(1, [renter_address])
+  return Data.to(new Constr(1, [addressToData(lucid, renterAddress)]));
 }
 
 
@@ -205,7 +269,7 @@ async function rentNft(
 ): Promise<InteractionResult> {
   const { contractAddress, compiledCode } = validator;
   const rentalUtxo = await fetchRentalUtxo(nftAssetName, contractAddress, lucid);
-  const datum = decodeDatum(rentalUtxo);
+  const datum = decodeDatum(rentalUtxo, lucid);
 
   if (datum.renter !== null) {
     throw new Error(`"${nftAssetName}" already has a registered renter.`);
@@ -224,10 +288,10 @@ async function rentNft(
 
   const txComplete = await lucid
     .newTx()
-    .collectFrom([rentalUtxo], buildRentRedeemer(renterAddress))
+    .collectFrom([rentalUtxo], buildRentRedeemer(renterAddress, lucid))
     .payToContract(
       contractAddress,
-      { inline: encodeDatum(updatedDatum) },
+      { inline: encodeDatum(updatedDatum, lucid) },
       {
         lovelace: rentalUtxo.assets.lovelace,
         [DONADA_POLICY_ID + fromText(nftAssetName)]: BigInt(1),
@@ -398,10 +462,12 @@ export default function DonadaPlatform() {
   const connectWallet = async (walletKey: string) => {
     try {
       const wallet = await BrowserWallet.enable(walletKey);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const api = await (window as any).cardano[walletKey].enable();
       const usedAddresses = await wallet.getUsedAddresses();
       const fullAddress = usedAddresses?.[0] ?? null;
 
-      setConnectedWallet({ name: walletKey, wallet });
+      setConnectedWallet({ name: walletKey, wallet, api });
       setFullWalletAddress(fullAddress);
       setWalletAddress(fullAddress ? `${fullAddress.slice(0, 7)}…` : null);
       setWallets([]);
@@ -448,7 +514,7 @@ export default function DonadaPlatform() {
       const available = utxos.flatMap((u) => {
         if (!u.datum) return [];
         try {
-          const datum = decodeDatum(u);
+          const datum = decodeDatum(u, lucid);
           if (datum.renter !== null) return []; // already rented
           return [{
             policyId: datum.nft_policy,
@@ -482,7 +548,7 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet((window as any).cardano[connectedWallet.name]);
+      lucid.selectWallet(connectedWallet.api);
 
       const { contractAddress } = await loadRentalValidator(lucid);
       const txHash = await submitListing(
@@ -514,7 +580,7 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet((window as any).cardano[connectedWallet.name]);
+      lucid.selectWallet(connectedWallet.api);
 
       const validator = await loadRentalValidator(lucid);
       const result = await rentNft(nft.assetName, fullWalletAddress, validator, lucid);
@@ -555,7 +621,7 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet((window as any).cardano[connectedWallet.name]);
+      lucid.selectWallet(connectedWallet.api);
 
       const { contractAddress } = await loadRentalValidator(lucid);
 
@@ -575,7 +641,7 @@ export default function DonadaPlatform() {
       const utxos = await lucid.utxosAt(contractAddress);
       const rentalParticipants: DrawParticipant[] = utxos.flatMap(u => {
         try {
-          const datum = decodeDatum(u);
+          const datum = decodeDatum(u, lucid);
           return [{ source: 'rental' as const, address: datum.owner, assetId: datum.nft_asset_name, rental: { utxo: u, datum } }];
         } catch { return []; }
       });
@@ -934,6 +1000,7 @@ export default function DonadaPlatform() {
         nfts={rentMode ? listedNfts : ownedNfts}
         onClose={closeModal}
         onConfirm={rentMode ? handleRentNft : handleListNft}
+        nextDrawDate={nextDrawDate}
       />
     </div>
   );

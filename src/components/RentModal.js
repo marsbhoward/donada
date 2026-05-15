@@ -7,6 +7,7 @@ export default function RentModal({
   onConfirm,
   nfts = [],
   mode = 'list', // 'list' = owner sets price; 'rent' = fee shown from datum
+  nextDrawDate = null,
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [rentalPrice, setRentalPrice] = useState('');
@@ -86,25 +87,38 @@ export default function RentModal({
           </div>
         )}
 
-        {mode === 'rent' ? (
-          <p className="price-input" style={{ textAlign: 'center', margin: '0.5rem 0' }}>
-            Rental fee:{' '}
-            {nfts[activeIndex]?.rentalFee != null
-              ? `${(Number(nfts[activeIndex].rentalFee) / 1_000_000).toFixed(2)} ADA`
-              : '—'}
-          </p>
-        ) : (
-          <input
-            className="price-input"
-            type="text"
-            inputMode="numeric"
-            placeholder="Lowest rental price"
-            value={rentalPrice}
-            onChange={(e) =>
-              setRentalPrice(e.target.value.replace(/\D/g, ''))
-            }
-          />
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', width: '100%' }}>
+          {mode === 'rent' ? (
+            <p className="price-input" style={{ textAlign: 'center', margin: '0.5rem 0', flex: 1 }}>
+              Rental fee:{' '}
+              {nfts[activeIndex]?.rentalFee != null
+                ? `${(Number(nfts[activeIndex].rentalFee) / 1_000_000).toFixed(2)} ADA`
+                : '—'}
+            </p>
+          ) : (
+            <div style={{ position: 'relative', display: 'inline-block', flex: 1 }}>
+              <span style={{
+                position: 'absolute', left: '0.6rem', top: '61%', transform: 'translateY(-50%)',
+                pointerEvents: 'none', userSelect: 'none', opacity: 0.6, fontSize: '1rem', lineHeight: 1
+              }}>₳</span>
+              <input
+                className="price-input"
+                type="text"
+                inputMode="numeric"
+                placeholder="Lowest rental price"
+                value={rentalPrice}
+                onChange={(e) =>
+                  setRentalPrice(e.target.value.replace(/\D/g, ''))
+                }
+                style={{ paddingLeft: '1.6rem', width: '100%' }}
+              />
+            </div>
+          )}
+          <div style={{ textAlign: 'right', whiteSpace: 'nowrap', opacity: 0.7, fontSize: '0.85rem' }}>
+            <div>Next draw</div>
+            <div>{nextDrawDate ? nextDrawDate.toLocaleDateString() : '—'}</div>
+          </div>
+        </div>
 
         <div className="modal-actions">
           <button className="select-btn" onClick={onClose}>
