@@ -108,11 +108,11 @@ function loadScheduledDraw(): ScheduledDraw | null {
     return { date: new Date(Date.UTC(year, month - 1, day, hour + 6, minute)), planned };
   }).filter((r): r is ScheduledDraw => r !== null);
 
-  // Return the nearest draw date to now (past or future)
-  return rows.reduce<ScheduledDraw | null>((best, r) => {
-    if (!best) return r;
-    return Math.abs(r.date.getTime() - now.getTime()) < Math.abs(best.date.getTime() - now.getTime()) ? r : best;
-  }, null);
+  // Only consider draws whose scheduled time has been reached.
+  // Among those, pick the most recent one (in case multiple rows have passed).
+  const pastRows = rows.filter(r => r.date <= now);
+  if (pastRows.length === 0) return null;
+  return pastRows.reduce((best, r) => r.date > best.date ? r : best);
 }
 
 // ── Validator loader ──────────────────────────────────────────────────────────
@@ -179,15 +179,14 @@ async function main() {
 
   // Step 1 — Check draw date
   const scheduled = loadScheduledDraw();
-  if (!scheduled) throw new Error('No draw dates found in drawDates.csv.');
-
-  const now = new Date();
-  if (scheduled.date > now) {
-    console.log(`Draw not yet due. Next draw: ${scheduled.date.toISOString()} | Now: ${now.toISOString()}`);
+  if (!scheduled) {
+    console.log('No draw due yet — scheduled time has not been reached.');
     process.exit(0);
   }
 
-  console.log(`\nExecuting draw scheduled for ${scheduled.date.toISOString()}`);
+  const cstOffset = -6 * 60; // CST = UTC-6, fixed (no DST adjustment)
+  const toCST = (d: Date) => new Date(d.getTime() + cstOffset * 60000).toISOString().replace('T', ' ').slice(0, 16) + ' CST';
+  console.log(`\nExecuting draw scheduled for ${toCST(scheduled.date)} (${scheduled.date.toISOString()})`);
 
   // Step 2 — Initialise Lucid
   const lucid = await Lucid.new(new ConwayCompatBlockfrost(BLOCKFROST_URL, BLOCKFROST_KEY), NETWORK);
