@@ -6,7 +6,7 @@ export default function RentModal({
   onClose,
   onConfirm,
   nfts = [],
-  mode = 'list', // 'list' = owner sets price; 'rent' = fee shown from datum
+  mode = 'list', // 'list' = owner sets price; 'rent' = fee shown from datum; 'cancel' = owner cancels listing
   nextDrawDate = null,
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
@@ -61,7 +61,7 @@ export default function RentModal({
         className="modal-sheet"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3>Select NFT to Rent</h3>
+        <h3>{mode === 'cancel' ? 'Cancel Listing' : 'Select NFT to Rent'}</h3>
 
         {nfts.length === 0 && (
           <p>No NFTs available for this policy.</p>
@@ -88,7 +88,11 @@ export default function RentModal({
         )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', width: '100%' }}>
-          {mode === 'rent' ? (
+          {mode === 'cancel' ? (
+            <p className="price-input" style={{ textAlign: 'center', margin: '0.5rem 0', flex: 1, fontStyle: 'italic', opacity: 0.75 }}>
+              NFT will be returned to your wallet
+            </p>
+          ) : mode === 'rent' ? (
             <p className="price-input" style={{ textAlign: 'center', margin: '0.5rem 0', flex: 1 }}>
               Rental fee:{' '}
               {nfts[activeIndex]?.rentalFee != null
@@ -134,7 +138,7 @@ export default function RentModal({
               })
             }
           >
-            Confirm
+            {mode === 'cancel' ? 'Cancel Listing' : 'Confirm'}
           </button>
         </div>
       </div>

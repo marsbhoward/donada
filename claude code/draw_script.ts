@@ -38,6 +38,10 @@ const __dirname  = dirname(__filename);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
+// Hours to add to CSV times to convert to UTC. EST = 5, CST = 6, MST = 7, PST = 8.
+// Note: this is a fixed offset — update when switching between standard/daylight time.
+const CSV_TZ_OFFSET_HOURS = 5; // EST (UTC-5)
+
 const NETWORK  = (process.env.NETWORK ?? 'Preview') as 'Preview' | 'Mainnet';
 const SEED     = (process.env.OWNER_SEED_PHRASE ?? '').replace(/^["']|["']$/g, '').replace(/\s+/g, ' ').trim();
 
@@ -105,7 +109,7 @@ function loadScheduledDraw(): ScheduledDraw | null {
     if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
     if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
     const planned = plannedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
-    return { date: new Date(Date.UTC(year, month - 1, day, hour + 6, minute)), planned };
+    return { date: new Date(Date.UTC(year, month - 1, day, hour + CSV_TZ_OFFSET_HOURS, minute)), planned };
   }).filter((r): r is ScheduledDraw => r !== null);
 
   // Only consider draws whose scheduled time has been reached.
@@ -184,9 +188,9 @@ async function main() {
     process.exit(0);
   }
 
-  const cstOffset = -6 * 60; // CST = UTC-6, fixed (no DST adjustment)
-  const toCST = (d: Date) => new Date(d.getTime() + cstOffset * 60000).toISOString().replace('T', ' ').slice(0, 16) + ' CST';
-  console.log(`\nExecuting draw scheduled for ${toCST(scheduled.date)} (${scheduled.date.toISOString()})`);
+  const estOffset = -CSV_TZ_OFFSET_HOURS * 60;
+  const toEST = (d: Date) => new Date(d.getTime() + estOffset * 60000).toISOString().replace('T', ' ').slice(0, 16) + ' EST';
+  console.log(`\nExecuting draw scheduled for ${toEST(scheduled.date)} (${scheduled.date.toISOString()})`);
 
   // Step 2 — Initialise Lucid
   const lucid = await Lucid.new(new ConwayCompatBlockfrost(BLOCKFROST_URL, BLOCKFROST_KEY), NETWORK);
