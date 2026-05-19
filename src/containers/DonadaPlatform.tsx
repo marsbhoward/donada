@@ -301,11 +301,12 @@ async function rentNft(
     .payToAddress(datum.project_wallet, { lovelace: projectShare })
     .addSigner(renterAddress)
     .validTo(validToSlot)
-    .complete();
+    .complete({ nativeUplc: false });
 
   // Inject the PlutusV3 script into the witness set.
-  // lucid-cardano's transaction builder only handles V1/V2, so we add the V3
-  // script directly via the CML TransactionWitnessSet API after .complete().
+  // lucid-cardano 0.10.7 has no PlutusV3 support in TransactionBuilder — construct()
+  // throws "Missing required script" for V3 redeemers unless nativeUplc:false skips
+  // that validation. The script is then added directly via the CML WitnessSet API.
   const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
   const scripts = (C as any).PlutusScripts.new();
   scripts.add(plutusScript);
@@ -341,7 +342,7 @@ async function cancelListingNft(
     .newTx()
     .collectFrom([listingUtxo], Data.to(new Constr(0, [])))
     .addSigner(ownerAddress)
-    .complete();
+    .complete({ nativeUplc: false });
 
   const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
   const scripts = (C as any).PlutusScripts.new();
