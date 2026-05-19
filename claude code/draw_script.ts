@@ -114,7 +114,7 @@ async function patchLucidForPlutusV3(lucid: Lucid, provider: ConwayCompatBlockfr
   costmdls.insert((C as any).Language.new_plutus_v2(), cmV2);
 
   const cmV3 = (C as any).CostModel.new_plutus_v3();
-  Object.values(cm.PlutusV3).forEach((cost: number, i: number) => {
+  Object.values(cm.PlutusV3).slice(0, 179).forEach((cost: number, i: number) => {
     cmV3.set(i, toCmlInt(cost));
   });
   costmdls.insert((C as any).Language.new_plutus_v3(), cmV3);
