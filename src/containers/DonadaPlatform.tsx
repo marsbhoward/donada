@@ -323,6 +323,43 @@ async function rentNft(
   };
 }
 
+async function cancelListingNft(
+  nftAssetName: string,
+  ownerAddress: string,
+  validator: ValidatorSetup,
+  lucid: Lucid
+): Promise<InteractionResult> {
+  const { contractAddress, compiledCode } = validator;
+  const listingUtxo = await fetchRentalUtxo(nftAssetName, contractAddress, lucid);
+  const datum = decodeDatum(listingUtxo, lucid);
+
+  if (datum.renter !== null) {
+    throw new Error(`"${nftAssetName}" already has a registered renter — cannot cancel.`);
+  }
+
+  const txComplete = await lucid
+    .newTx()
+    .collectFrom([listingUtxo], Data.to(new Constr(0, [])))
+    .addSigner(ownerAddress)
+    .complete();
+
+  const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
+  const scripts = (C as any).PlutusScripts.new();
+  scripts.add(plutusScript);
+  const v3Witness = C.TransactionWitnessSet.new();
+  v3Witness.set_plutus_v3_scripts(scripts);
+  (txComplete as any).witnessSetBuilder.add_existing(v3Witness);
+
+  const signed = await txComplete.sign().complete();
+  const txHash = await signed.submit();
+
+  return {
+    success: true,
+    txHash,
+    message: `Listing for "${nftAssetName}" cancelled. Your NFT will return to your wallet.`,
+  };
+}
+
 // ── Wallet detection ──────────────────────────────────────────────────────────
 
 function getAvailableWallets(): WalletInfo[] {
@@ -335,8 +372,8 @@ function getAvailableWallets(): WalletInfo[] {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DonadaPlatform() {
-  // Network (toggled in admin panel; defaults to Mainnet)
-  const [network, setNetwork] = useState<Network>('Mainnet');
+  // Network (toggled in admin panel; defaults to Preview for testnet)
+  const [network, setNetwork] = useState<Network>('Preview');
 
   // Draw date / countdown
   const [nextDrawDate, setNextDrawDate] = useState<Date | null>(null);
@@ -368,6 +405,14 @@ export default function DonadaPlatform() {
   const [isRenting, setIsRenting] = useState(false);
   const [rentTxHash, setRentTxHash] = useState<string | null>(null);
   const [rentError, setRentError] = useState<string | null>(null);
+
+  // Cancel listing flow
+  const [cancelNfts, setCancelNfts] = useState<NftAsset[]>([]);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [loadingCancelListings, setLoadingCancelListings] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [cancelTxHash, setCancelTxHash] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   // Admin draw flow (only shown when project wallet is connected)
   const [drawPrizeAda, setDrawPrizeAda] = useState('');
@@ -591,6 +636,56 @@ export default function DonadaPlatform() {
       setRentError(msg);
     } finally {
       setIsRenting(false);
+    }
+  };
+
+  // ----- Owner: load cancellable listings into modal -----
+  const loadCancellableListings = async () => {
+    if (!fullWalletAddress || !connectedWallet) return;
+    setLoadingCancelListings(true);
+    try {
+      const lucid = await initLucid(network);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lucid.selectWallet(connectedWallet.api);
+      const { contractAddress } = await loadRentalValidator(lucid);
+      const utxos = await lucid.utxosAt(contractAddress);
+      const owned = utxos.flatMap(u => {
+        try {
+          const datum = decodeDatum(u, lucid);
+          if (datum.owner !== fullWalletAddress || datum.renter !== null) return [];
+          return [{ policyId: datum.nft_policy, assetName: datum.nft_asset_name, name: datum.nft_asset_name } as NftAsset];
+        } catch { return []; }
+      });
+      setCancelNfts(owned);
+      setShowCancelModal(true);
+    } catch (err) {
+      console.error('Failed to load cancellable listings:', err);
+    } finally {
+      setLoadingCancelListings(false);
+    }
+  };
+
+  // ----- Owner: confirm cancel modal → submit CancelListing transaction -----
+  const handleCancelNft = async ({ nft }: { nft: NftAsset; rentalPrice: string }) => {
+    if (!fullWalletAddress || !connectedWallet) return;
+    setShowCancelModal(false);
+    setIsCancelling(true);
+    setCancelTxHash(null);
+    setCancelError(null);
+    try {
+      const lucid = await initLucid(network);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lucid.selectWallet(connectedWallet.api);
+      const validator = await loadRentalValidator(lucid);
+      const result = await cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
+      setCancelTxHash(result.txHash);
+      setCancelNfts(prev => prev.filter(n => n.assetName !== nft.assetName));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('Cancel failed:', err);
+      setCancelError(msg);
+    } finally {
+      setIsCancelling(false);
     }
   };
 
@@ -934,6 +1029,34 @@ export default function DonadaPlatform() {
                   </div>
                 </div>
               )}
+
+              <hr className="section-break" />
+
+              <div className="action-block">
+                <div className="action-text">Cancel Listing</div>
+                <button
+                  className="select-btn small"
+                  disabled={!connectedWallet || loadingCancelListings || isCancelling}
+                  onClick={loadCancellableListings}
+                >
+                  {loadingCancelListings ? 'Loading...' : isCancelling ? 'Cancelling...' : 'select'}
+                </button>
+              </div>
+
+              {cancelTxHash && (
+                <div className="action-block">
+                  <div className="action-text" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
+                    Cancelled! Tx: {cancelTxHash.slice(0, 12)}…
+                  </div>
+                </div>
+              )}
+              {cancelError && (
+                <div className="action-block">
+                  <div className="action-text" style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
+                    Error: {cancelError}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1000,6 +1123,15 @@ export default function DonadaPlatform() {
         nfts={rentMode ? listedNfts : ownedNfts}
         onClose={closeModal}
         onConfirm={rentMode ? handleRentNft : handleListNft}
+        nextDrawDate={nextDrawDate}
+      />
+
+      <RentModal
+        isOpen={showCancelModal}
+        mode="cancel"
+        nfts={cancelNfts}
+        onClose={() => setShowCancelModal(false)}
+        onConfirm={handleCancelNft}
         nextDrawDate={nextDrawDate}
       />
     </div>

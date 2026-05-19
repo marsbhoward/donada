@@ -213,9 +213,10 @@ validator rental {
       }
 
       // ── ClaimBack ──────────────────────────────────────────────────────────
-      // Two valid scenarios:
+      // Three valid scenarios:
       //   a. draw_date passed AND owner signs (independent owner reclaim)
-      //   b. draw contract is present as a tx input (post-draw bulk return)
+      //   b. draw_date passed AND project wallet signs (automated post-draw cleanup)
+      //   c. draw contract is present as a tx input (future bulk-return contract)
       ClaimBack -> {
         let deadline_passed = tx_lower_bound(tx) > datum.draw_date
         let signed_by_owner =
@@ -223,9 +224,16 @@ validator rental {
             VerificationKey(pkh) -> list.has(tx.extra_signatories, pkh)
             _ -> False
           }
+        let signed_by_project =
+          when datum.project_wallet.payment_credential is {
+            VerificationKey(pkh) -> list.has(tx.extra_signatories, pkh)
+            _ -> False
+          }
         let called_by_draw_contract = draw_contract_in_inputs(tx)
 
-        ( deadline_passed && signed_by_owner ) || called_by_draw_contract
+        ( deadline_passed && signed_by_owner ) ||
+        ( deadline_passed && signed_by_project ) ||
+        called_by_draw_contract
       }
     }
   }
