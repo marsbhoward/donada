@@ -134,23 +134,30 @@ async function patchLucidForPlutusV3(
   const cm = pp.costModels as Record<string, Record<string, number>>;
   if (!cm?.PlutusV3) return;
 
+  // C.BigNum is unsigned — negative cost model values (which exist in V3) must
+  // use Int.new_negative(abs) instead of Int.new(BigNum.from_str(negative)).
+  const toCmlInt = (cost: number) => {
+    const abs = C.BigNum.from_str(Math.abs(cost).toString());
+    return cost < 0 ? (C as any).Int.new_negative(abs) : C.Int.new(abs);
+  };
+
   const costmdls = (C as any).Costmdls.new();
 
   const cmV1 = (C as any).CostModel.new();
   Object.values(cm.PlutusV1 || {}).forEach((cost: number, i: number) => {
-    cmV1.set(i, C.Int.new(C.BigNum.from_str(cost.toString())));
+    cmV1.set(i, toCmlInt(cost));
   });
   costmdls.insert((C as any).Language.new_plutus_v1(), cmV1);
 
   const cmV2 = (C as any).CostModel.new_plutus_v2();
   Object.values(cm.PlutusV2 || {}).forEach((cost: number, i: number) => {
-    cmV2.set(i, C.Int.new(C.BigNum.from_str(cost.toString())));
+    cmV2.set(i, toCmlInt(cost));
   });
   costmdls.insert((C as any).Language.new_plutus_v2(), cmV2);
 
   const cmV3 = (C as any).CostModel.new_plutus_v3();
   Object.values(cm.PlutusV3).forEach((cost: number, i: number) => {
-    cmV3.set(i, C.Int.new(C.BigNum.from_str(cost.toString())));
+    cmV3.set(i, toCmlInt(cost));
   });
   costmdls.insert((C as any).Language.new_plutus_v3(), cmV3);
 
