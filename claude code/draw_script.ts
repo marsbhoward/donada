@@ -273,7 +273,7 @@ async function claimBackRentalUtxos(
         .collectFrom([utxo], Data.to(new Constr(2, [])))
         .payToAddress(datum.owner, utxo.assets)
         .addSigner(PROJECT_WALLET_ADDRESS)
-        .validFrom(Number(datum.draw_date) + 10 * 60 * 1000)
+        .validFrom(Number(datum.draw_date) + 1000)
         .complete();
 
       const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
