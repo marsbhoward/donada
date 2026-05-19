@@ -28,7 +28,8 @@
 
 import { Lucid, Blockfrost, Data, Constr, UTxO, fromHex, toText, C } from "lucid-cardano";
 import type { ProtocolParameters } from "lucid-cardano";
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
+import { execSync } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createHash } from "crypto";
@@ -88,8 +89,10 @@ class ConwayCompatBlockfrost extends Blockfrost {
 // CSV times are authored in CST (UTC-6). Add this offset to get UTC.
 const CST_OFFSET_HOURS = 6;
 
-function parseCsvRowToUtc(line: string): { date: Date; planned: boolean } | null {
-  const [, dateStr, timeStr, plannedRaw] = line.split(',');
+const CSV_PATH = join(__dirname, '..', 'public', 'data', 'drawDates.csv');
+
+function parseCsvRowToUtc(line: string): { date: Date; complete: boolean } | null {
+  const [, dateStr, timeStr, completedRaw] = line.split(',');
   if (!dateStr || !timeStr) return null;
   const [year, month, day] = dateStr.trim().split('-').map(Number);
   const match = timeStr.trim().match(/(\d+):(\d+)(am|pm)/i);
@@ -98,30 +101,56 @@ function parseCsvRowToUtc(line: string): { date: Date; planned: boolean } | null
   const minute = Number(match[2]);
   if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
   if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
-  const planned = plannedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
+  const complete = completedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
   // Convert CST → UTC before constructing the Date
-  return { date: new Date(Date.UTC(year, month - 1, day, hour + CST_OFFSET_HOURS, minute)), planned };
+  return { date: new Date(Date.UTC(year, month - 1, day, hour + CST_OFFSET_HOURS, minute)), complete };
 }
 
 interface ScheduledDraw {
-  date:    Date;
-  planned: boolean;
+  date:     Date;
+  complete: boolean;
 }
 
 function loadScheduledDraw(): ScheduledDraw | null {
-  const csvPath = join(__dirname, '..', 'public', 'data', 'drawDates.csv');
-  const lines   = readFileSync(csvPath, 'utf-8').trim().split('\n').slice(1);
-  const now     = new Date();
-
-  const rows = lines
+  const lines = readFileSync(CSV_PATH, 'utf-8').trim().split('\n').slice(1);
+  const rows  = lines
     .map(parseCsvRowToUtc)
     .filter((r): r is ScheduledDraw => r !== null);
 
-  // Return the nearest draw date to now (past or future)
-  return rows.reduce<ScheduledDraw | null>((best, r) => {
-    if (!best) return r;
-    return Math.abs(r.date.getTime() - now.getTime()) < Math.abs(best.date.getTime() - now.getTime()) ? r : best;
-  }, null);
+  // Earliest draw date that has not been marked complete
+  const incomplete = rows
+    .filter(r => !r.complete)
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  return incomplete[0] ?? null;
+}
+
+function markDrawComplete(drawDate: Date): void {
+  const repoRoot = join(__dirname, '..');
+  const lines    = readFileSync(CSV_PATH, 'utf-8').split('\n');
+  const drawMs   = drawDate.getTime();
+
+  const updated = lines.map(line => {
+    const parsed = parseCsvRowToUtc(line);
+    if (parsed && parsed.date.getTime() === drawMs) {
+      return line.replace(/"n"/, '"y"');
+    }
+    return line;
+  });
+
+  writeFileSync(CSV_PATH, updated.join('\n'));
+  console.log(`Marked draw ${drawDate.toISOString()} as complete in CSV.`);
+
+  try {
+    execSync('git config user.email "actions@github.com"', { cwd: repoRoot });
+    execSync('git config user.name "GitHub Actions"',      { cwd: repoRoot });
+    execSync('git add public/data/drawDates.csv',          { cwd: repoRoot });
+    execSync(`git commit -m "Mark draw complete: ${drawDate.toISOString()}"`, { cwd: repoRoot });
+    execSync('git push',                                   { cwd: repoRoot });
+    console.log('CSV committed and pushed.');
+  } catch (err) {
+    console.error('Failed to commit/push CSV update:', err);
+  }
 }
 
 // ── Validator loader ──────────────────────────────────────────────────────────
@@ -390,6 +419,10 @@ async function main() {
   const txHash = await signed.submit();
 
   console.log(`\nDraw complete! Tx hash: ${txHash}`);
+
+  // Mark this draw as complete in the CSV before ClaimBack — prevents
+  // double payout if the cron fires again before the next draw is added.
+  markDrawComplete(scheduled.date);
 
   // Step 8 — Return each rented NFT to its owner (10 min after draw_date)
   const compiledCode    = loadCompiledCode();

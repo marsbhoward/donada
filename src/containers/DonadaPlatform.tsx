@@ -435,8 +435,8 @@ export default function DonadaPlatform() {
 
         // CSV times are authored in CST (UTC-6). Add this offset to get UTC.
         const CST_OFFSET_HOURS = 6;
-        const parseRow = (line: string): { date: Date; planned: boolean } | null => {
-          const [, dateStr, timeStr, plannedRaw] = line.split(',');
+        const parseRow = (line: string): { date: Date; complete: boolean } | null => {
+          const [, dateStr, timeStr, completedRaw] = line.split(',');
           if (!dateStr || !timeStr) return null;
           const [year, month, day] = dateStr.trim().split('-').map(Number);
           const match = timeStr.trim().match(/(\d+):(\d+)(am|pm)/i);
@@ -445,29 +445,26 @@ export default function DonadaPlatform() {
           const minute = Number(match[2]);
           if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
           if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
-          const planned = plannedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
+          const complete = completedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
           // Convert CST → UTC before constructing the Date
-          return { date: new Date(Date.UTC(year, month - 1, day, hour + CST_OFFSET_HOURS, minute)), planned };
+          return { date: new Date(Date.UTC(year, month - 1, day, hour + CST_OFFSET_HOURS, minute)), complete };
         };
 
-        const allRows = lines
+        // Only consider draws that have not been marked complete
+        const incomplete = lines
           .map(parseRow)
-          .filter((r): r is { date: Date; planned: boolean } => r !== null)
+          .filter((r): r is { date: Date; complete: boolean } => r !== null && !r.complete)
           .sort((a, b) => a.date.getTime() - b.date.getTime());
 
-        // scheduledDrawDate: nearest date to now (past or future) — used for entropy.
-        // nextDrawDate: nearest future date only — used for countdown display.
-        const nearest = allRows.reduce<{ date: Date; planned: boolean } | null>((best, r) => {
-          if (!best) return r;
-          return Math.abs(r.date.getTime() - now.getTime()) < Math.abs(best.date.getTime() - now.getTime()) ? r : best;
-        }, null);
-        if (nearest) {
-          setScheduledDrawDate(nearest.date);
-          setDrawPlanned(nearest.planned);
+        // scheduledDrawDate: earliest incomplete draw (past or future) — used for entropy.
+        // nextDrawDate: earliest incomplete future draw — used for countdown and datum.
+        if (incomplete.length > 0) {
+          setScheduledDrawDate(incomplete[0].date);
+          setDrawPlanned(true);
         }
 
-        const futureDates = allRows.filter(r => r.date > now);
-        if (futureDates.length > 0) setNextDrawDate(futureDates[0].date);
+        const nextIncomplete = incomplete.find(r => r.date > now);
+        if (nextIncomplete) setNextDrawDate(nextIncomplete.date);
       } catch (err) {
         console.error('Failed to load draw dates', err);
       }
