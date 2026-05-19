@@ -433,8 +433,8 @@ export default function DonadaPlatform() {
         const lines = text.trim().split('\n').slice(1);
         const now = new Date();
 
-        // CSV times are authored in CST (UTC-6). Add this offset to get UTC.
-        const CST_OFFSET_HOURS = 6;
+        // CSV times are authored in Central Time. CDT (summer) = UTC-5, CST (winter) = UTC-6.
+        const CST_OFFSET_HOURS = 5;
         const parseRow = (line: string): { date: Date; complete: boolean } | null => {
           const [, dateStr, timeStr, completedRaw] = line.split(',');
           if (!dateStr || !timeStr) return null;

@@ -86,8 +86,8 @@ class ConwayCompatBlockfrost extends Blockfrost {
 
 // ── Draw date check ───────────────────────────────────────────────────────────
 
-// CSV times are authored in CST (UTC-6). Add this offset to get UTC.
-const CST_OFFSET_HOURS = 6;
+// CSV times are authored in Central Time. CDT (summer) = UTC-5, CST (winter) = UTC-6.
+const CST_OFFSET_HOURS = 5;
 
 const CSV_PATH = join(__dirname, '..', 'public', 'data', 'drawDates.csv');
 
