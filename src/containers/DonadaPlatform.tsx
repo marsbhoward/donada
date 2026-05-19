@@ -394,7 +394,7 @@ export default function DonadaPlatform() {
 
   // Owner listing flow
   const [ownedNfts, setOwnedNfts] = useState<NftAsset[]>([]);
-  const [loadingNfts, setLoadingNfts] = useState(false);
+  const [loadingOwnedNfts, setLoadingOwnedNfts] = useState(false);
   const [isListing, setIsListing] = useState(false);
   const [listingTxHash, setListingTxHash] = useState<string | null>(null);
   const [listingError, setListingError] = useState<string | null>(null);
@@ -527,10 +527,10 @@ export default function DonadaPlatform() {
   };
 
   // ----- Owner: load their own NFTs then open listing modal -----
-  const loadNftsForPolicy = async () => {
+  const loadOwnedNftsForListing = async () => {
     if (!connectedWallet) return;
     try {
-      setLoadingNfts(true);
+      setLoadingOwnedNfts(true);
       const assets = await connectedWallet.wallet.getAssets();
       const filtered = assets.filter((a: NftAsset) => POLICY_IDS.includes(a.policyId));
       const enriched: NftAsset[] = await Promise.all(
@@ -542,7 +542,7 @@ export default function DonadaPlatform() {
     } catch (err) {
       console.error('Failed to load NFTs', err);
     } finally {
-      setLoadingNfts(false);
+      setLoadingOwnedNfts(false);
     }
   };
 
@@ -583,7 +583,7 @@ export default function DonadaPlatform() {
   };
 
   // ----- Owner: confirm listing modal → submit listing transaction -----
-  const handleListNft = async ({ nft, rentalPrice }: { nft: NftAsset; rentalPrice: string }) => {
+  const handleCreateListing = async ({ nft, rentalPrice }: { nft: NftAsset; rentalPrice: string }) => {
     if (!fullWalletAddress || !nextDrawDate || !connectedWallet) return;
     closeModal();
     setIsListing(true);
@@ -1005,13 +1005,13 @@ export default function DonadaPlatform() {
               <hr className="section-break" />
 
               <div className="action-block">
-                <div className="action-text">Rent out your NFT</div>
+                <div className="action-text">Create Rental Listing</div>
                 <button
                   className="select-btn small"
-                  disabled={!connectedWallet || loadingNfts || !countdown || isListing}
-                  onClick={() => loadNftsForPolicy()}
+                  disabled={!connectedWallet || loadingOwnedNfts || !countdown || isListing}
+                  onClick={() => loadOwnedNftsForListing()}
                 >
-                  {loadingNfts ? 'Loading...' : isListing ? 'Listing...' : 'select'}
+                  {loadingOwnedNfts ? 'Loading...' : isListing ? 'Listing...' : 'select'}
                 </button>
               </div>
 
@@ -1122,7 +1122,7 @@ export default function DonadaPlatform() {
         mode={rentMode ? 'rent' : 'list'}
         nfts={rentMode ? listedNfts : ownedNfts}
         onClose={closeModal}
-        onConfirm={rentMode ? handleRentNft : handleListNft}
+        onConfirm={rentMode ? handleRentNft : handleCreateListing}
         nextDrawDate={nextDrawDate}
       />
 
