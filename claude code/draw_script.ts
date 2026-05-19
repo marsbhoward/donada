@@ -26,7 +26,7 @@
 //   - All other entries: 100% to winner address
 // =============================================================================
 
-import { Lucid, Blockfrost, Data, Constr, UTxO, fromHex, toText } from "lucid-cardano";
+import { Lucid, Blockfrost, Data, Constr, UTxO, fromHex, toText, C } from "lucid-cardano";
 import type { ProtocolParameters } from "lucid-cardano";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
@@ -166,78 +166,6 @@ function decodeDatum(utxo: UTxO, lucid: Lucid): RentalDatum {
   };
 }
 
-// ── CBOR utilities for PlutusV3 inline-script injection ───────────────────────
-
-function cborConcat(...parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((s, p) => s + p.length, 0);
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) { out.set(p, off); off += p.length; }
-  return out;
-}
-
-function cborByteStr(bytes: Uint8Array): Uint8Array {
-  const len = bytes.length;
-  if      (len <= 23)     return cborConcat(new Uint8Array([0x40 | len]), bytes);
-  if      (len <= 0xff)   return cborConcat(new Uint8Array([0x58, len]), bytes);
-  if      (len <= 0xffff) return cborConcat(new Uint8Array([0x59, len >> 8, len & 0xff]), bytes);
-  return cborConcat(new Uint8Array([0x5a, (len>>>24)&0xff, (len>>>16)&0xff, (len>>>8)&0xff, len&0xff]), bytes);
-}
-
-function skipCborItem(data: Uint8Array, pos: number): number {
-  const b = data[pos], mt = b >> 5, ai = b & 0x1f;
-  let arg = 0, h = pos + 1;
-  if      (ai <= 23) arg = ai;
-  else if (ai === 24) { arg = data[pos+1]; h = pos+2; }
-  else if (ai === 25) { arg = (data[pos+1]<<8)|data[pos+2]; h = pos+3; }
-  else if (ai === 26) { arg = ((data[pos+1]<<24)|(data[pos+2]<<16)|(data[pos+3]<<8)|data[pos+4])>>>0; h = pos+5; }
-  if (mt === 0 || mt === 1) return h;
-  if (mt === 2 || mt === 3) {
-    if (ai === 31) { let p = h; while (data[p] !== 0xff) p = skipCborItem(data, p); return p+1; }
-    return h + arg;
-  }
-  if (mt === 4) {
-    if (ai === 31) { let p = h; while (data[p] !== 0xff) p = skipCborItem(data, p); return p+1; }
-    let p = h; for (let i = 0; i < arg; i++) p = skipCborItem(data, p); return p;
-  }
-  if (mt === 5) {
-    if (ai === 31) { let p = h; while (data[p] !== 0xff) { p = skipCborItem(data, p); p = skipCborItem(data, p); } return p+1; }
-    let p = h; for (let i = 0; i < arg*2; i++) p = skipCborItem(data, p); return p;
-  }
-  if (mt === 6) return skipCborItem(data, h);
-  if (ai === 24) return pos+2; if (ai === 25) return pos+3;
-  if (ai === 26) return pos+5; if (ai === 27) return pos+9;
-  return h;
-}
-
-function ensureFourElement(txBytes: Uint8Array): Uint8Array {
-  if ((txBytes[0] & 0x1f) === 4) return txBytes;
-  const bodyEnd    = skipCborItem(txBytes, 1);
-  const witnessEnd = skipCborItem(txBytes, bodyEnd);
-  return cborConcat(
-    new Uint8Array([0x84]),
-    txBytes.slice(1, witnessEnd),
-    new Uint8Array([0xf5]),
-    txBytes.slice(witnessEnd),
-  );
-}
-
-function injectPlutusV3ScriptIntoWitnessSet(txBytes: Uint8Array, compiledCode: string): Uint8Array {
-  const bodyEnd      = skipCborItem(txBytes, 1);
-  const witnessEnd   = skipCborItem(txBytes, bodyEnd);
-  const witnessBytes = txBytes.slice(bodyEnd, witnessEnd);
-  const count        = witnessBytes[0] & 0x1f;
-  if (count >= 23) throw new Error('Too many witness-set entries to inline-patch');
-  const scriptBytes  = fromHex(compiledCode);
-  const newEntry     = cborConcat(new Uint8Array([0x07]), new Uint8Array([0x81]), cborByteStr(scriptBytes));
-  const patchedWitness = cborConcat(
-    new Uint8Array([0xa0 | (count + 1)]),
-    witnessBytes.slice(1),
-    newEntry,
-  );
-  return cborConcat(txBytes.slice(0, bodyEnd), patchedWitness, txBytes.slice(witnessEnd));
-}
-
 // ── CSV helpers ───────────────────────────────────────────────────────────────
 
 function loadNftHolders(): Array<{ address: string; assetId: string }> {
@@ -303,25 +231,23 @@ async function claimBackRentalUtxos(
       const datum = decodeDatum(utxo, lucid);
       console.log(`  ${datum.nft_asset_name} → ${datum.owner.slice(0, 24)}…`);
 
-      const tx = lucid
+      const txComplete = await lucid
         .newTx()
         .collectFrom([utxo], Data.to(new Constr(2, [])))
         .payToAddress(datum.owner, utxo.assets)
         .addSigner(PROJECT_WALLET_ADDRESS)
-        .validFrom(Number(datum.draw_date) + 10 * 60 * 1000);
+        .validFrom(Number(datum.draw_date) + 10 * 60 * 1000)
+        .complete();
 
-      const txComplete = await tx.complete({ nativeUplc: false });
-      const signed     = await txComplete.sign().complete();
-      const rawBytes   = ensureFourElement((signed as any).txSigned.to_bytes());
-      const patched    = injectPlutusV3ScriptIntoWitnessSet(rawBytes, compiledCode);
+      const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
+      const scripts = (C as any).PlutusScripts.new();
+      scripts.add(plutusScript);
+      const v3Witness = C.TransactionWitnessSet.new();
+      v3Witness.set_plutus_v3_scripts(scripts);
+      (txComplete as any).witnessSetBuilder.add_existing(v3Witness);
 
-      const res = await fetch(`${BLOCKFROST_URL}/tx/submit`, {
-        method:  'POST',
-        headers: { project_id: BLOCKFROST_KEY, 'Content-Type': 'application/cbor' },
-        body:    patched.buffer.slice(patched.byteOffset, patched.byteOffset + patched.byteLength) as ArrayBuffer,
-      });
-      if (!res.ok) throw new Error(JSON.stringify(await res.json()));
-      const txHash = await res.json() as string;
+      const signed = await txComplete.sign().complete();
+      const txHash = await signed.submit();
       console.log(`  Claimed! Tx: ${txHash}`);
     } catch (err) {
       console.error(`  Failed (${utxo.txHash}#${utxo.outputIndex}):`, err);
