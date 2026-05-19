@@ -84,75 +84,6 @@ class ConwayCompatBlockfrost extends Blockfrost {
   }
 }
 
-// ── PlutusV3 cost model patch ─────────────────────────────────────────────────
-
-// lucid-cardano's createCostModels() only handles V1/V2. Without V3 in the
-// CML cost model config, script_data_hash is computed without V3 entries and
-// the node rejects transactions that spend PlutusV3 scripts.
-async function patchLucidForPlutusV3(lucid: Lucid, provider: ConwayCompatBlockfrost): Promise<void> {
-  const pp = await provider.getProtocolParameters();
-  const cm = pp.costModels as Record<string, Record<string, number>>;
-  if (!cm?.PlutusV3) return;
-
-  const toCmlInt = (cost: number) => {
-    const abs = C.BigNum.from_str(Math.abs(cost).toString());
-    return cost < 0 ? (C as any).Int.new_negative(abs) : C.Int.new(abs);
-  };
-
-  const costmdls = (C as any).Costmdls.new();
-
-  const cmV1 = (C as any).CostModel.new();
-  Object.values(cm.PlutusV1 || {}).forEach((cost: number, i: number) => {
-    cmV1.set(i, toCmlInt(cost));
-  });
-  costmdls.insert((C as any).Language.new_plutus_v1(), cmV1);
-
-  const cmV2 = (C as any).CostModel.new_plutus_v2();
-  Object.values(cm.PlutusV2 || {}).forEach((cost: number, i: number) => {
-    cmV2.set(i, toCmlInt(cost));
-  });
-  costmdls.insert((C as any).Language.new_plutus_v2(), cmV2);
-
-  const cmV3 = (C as any).CostModel.new_plutus_v3();
-  Object.values(cm.PlutusV3).slice(0, 179).forEach((cost: number, i: number) => {
-    cmV3.set(i, toCmlInt(cost));
-  });
-  costmdls.insert((C as any).Language.new_plutus_v3(), cmV3);
-
-  const slotConfig = NETWORK === 'Mainnet'
-    ? { zeroTime: 1596059091000, zeroSlot: 4492800, slotLength: 1000 }
-    : { zeroTime: 1666656000000, zeroSlot: 0, slotLength: 1000 };
-
-  (lucid as any).txBuilderConfig = (C as any).TransactionBuilderConfigBuilder.new()
-    .coins_per_utxo_byte(C.BigNum.from_str(pp.coinsPerUtxoByte.toString()))
-    .fee_algo(C.LinearFee.new(
-      C.BigNum.from_str(pp.minFeeA.toString()),
-      C.BigNum.from_str(pp.minFeeB.toString()),
-    ))
-    .key_deposit(C.BigNum.from_str(pp.keyDeposit.toString()))
-    .pool_deposit(C.BigNum.from_str(pp.poolDeposit.toString()))
-    .max_tx_size(pp.maxTxSize)
-    .max_value_size(pp.maxValSize)
-    .collateral_percentage(pp.collateralPercentage)
-    .max_collateral_inputs(pp.maxCollateralInputs)
-    .max_tx_ex_units((C as any).ExUnits.new(
-      C.BigNum.from_str(pp.maxTxExMem.toString()),
-      C.BigNum.from_str(pp.maxTxExSteps.toString()),
-    ))
-    .ex_unit_prices((C as any).ExUnitPrices.from_float(pp.priceMem, pp.priceStep))
-    .slot_config(
-      C.BigNum.from_str(slotConfig.zeroTime.toString()),
-      C.BigNum.from_str(slotConfig.zeroSlot.toString()),
-      slotConfig.slotLength,
-    )
-    .blockfrost((C as any).Blockfrost.new(
-      provider.url + '/utils/txs/evaluate',
-      provider.projectId || '',
-    ))
-    .costmdls(costmdls)
-    .build();
-}
-
 // ── Draw date check ───────────────────────────────────────────────────────────
 
 // CSV times are authored in Central Time. CDT (summer) = UTC-5, CST (winter) = UTC-6.
@@ -380,9 +311,7 @@ async function main() {
   console.log(`\nExecuting draw scheduled for ${scheduled.date.toISOString()}`);
 
   // Step 2 — Initialise Lucid
-  const provider = new ConwayCompatBlockfrost(BLOCKFROST_URL, BLOCKFROST_KEY);
-  const lucid = await Lucid.new(provider, NETWORK);
-  await patchLucidForPlutusV3(lucid, provider);
+  const lucid = await Lucid.new(new ConwayCompatBlockfrost(BLOCKFROST_URL, BLOCKFROST_KEY), NETWORK);
   lucid.selectWalletFromSeed(SEED);
 
   const signerAddress = await lucid.wallet.address();

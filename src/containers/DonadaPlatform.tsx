@@ -115,84 +115,7 @@ class ConwayCompatBlockfrost extends Blockfrost {
 
 async function initLucid(network: Network): Promise<Lucid> {
   const { url, apiKey } = blockfrostConfig(network);
-  const provider = new ConwayCompatBlockfrost(url, apiKey);
-  const lucid = await Lucid.new(provider, network);
-  await patchLucidForPlutusV3(lucid, provider, network);
-  return lucid;
-}
-
-// Rebuild lucid.txBuilderConfig with PlutusV3 cost models included.
-// lucid-cardano's createCostModels() only handles V1/V2; without V3 in the CML
-// cost model config the script_data_hash is computed without V3 entries, which
-// causes the node to reject transactions that spend PlutusV3 scripts.
-async function patchLucidForPlutusV3(
-  lucid: Lucid,
-  provider: ConwayCompatBlockfrost,
-  network: Network,
-): Promise<void> {
-  const pp = await provider.getProtocolParameters();
-  const cm = pp.costModels as Record<string, Record<string, number>>;
-  if (!cm?.PlutusV3) return;
-
-  // C.BigNum is unsigned — negative cost model values (which exist in V3) must
-  // use Int.new_negative(abs) instead of Int.new(BigNum.from_str(negative)).
-  const toCmlInt = (cost: number) => {
-    const abs = C.BigNum.from_str(Math.abs(cost).toString());
-    return cost < 0 ? (C as any).Int.new_negative(abs) : C.Int.new(abs);
-  };
-
-  const costmdls = (C as any).Costmdls.new();
-
-  const cmV1 = (C as any).CostModel.new();
-  Object.values(cm.PlutusV1 || {}).forEach((cost: number, i: number) => {
-    cmV1.set(i, toCmlInt(cost));
-  });
-  costmdls.insert((C as any).Language.new_plutus_v1(), cmV1);
-
-  const cmV2 = (C as any).CostModel.new_plutus_v2();
-  Object.values(cm.PlutusV2 || {}).forEach((cost: number, i: number) => {
-    cmV2.set(i, toCmlInt(cost));
-  });
-  costmdls.insert((C as any).Language.new_plutus_v2(), cmV2);
-
-  const cmV3 = (C as any).CostModel.new_plutus_v3();
-  Object.values(cm.PlutusV3).slice(0, 179).forEach((cost: number, i: number) => {
-    cmV3.set(i, toCmlInt(cost));
-  });
-  costmdls.insert((C as any).Language.new_plutus_v3(), cmV3);
-
-  const slotConfig = network === 'Mainnet'
-    ? { zeroTime: 1596059091000, zeroSlot: 4492800, slotLength: 1000 }
-    : { zeroTime: 1666656000000, zeroSlot: 0, slotLength: 1000 };
-
-  (lucid as any).txBuilderConfig = (C as any).TransactionBuilderConfigBuilder.new()
-    .coins_per_utxo_byte(C.BigNum.from_str(pp.coinsPerUtxoByte.toString()))
-    .fee_algo(C.LinearFee.new(
-      C.BigNum.from_str(pp.minFeeA.toString()),
-      C.BigNum.from_str(pp.minFeeB.toString()),
-    ))
-    .key_deposit(C.BigNum.from_str(pp.keyDeposit.toString()))
-    .pool_deposit(C.BigNum.from_str(pp.poolDeposit.toString()))
-    .max_tx_size(pp.maxTxSize)
-    .max_value_size(pp.maxValSize)
-    .collateral_percentage(pp.collateralPercentage)
-    .max_collateral_inputs(pp.maxCollateralInputs)
-    .max_tx_ex_units((C as any).ExUnits.new(
-      C.BigNum.from_str(pp.maxTxExMem.toString()),
-      C.BigNum.from_str(pp.maxTxExSteps.toString()),
-    ))
-    .ex_unit_prices((C as any).ExUnitPrices.from_float(pp.priceMem, pp.priceStep))
-    .slot_config(
-      C.BigNum.from_str(slotConfig.zeroTime.toString()),
-      C.BigNum.from_str(slotConfig.zeroSlot.toString()),
-      slotConfig.slotLength,
-    )
-    .blockfrost((C as any).Blockfrost.new(
-      provider.url + '/utils/txs/evaluate',
-      provider.projectId || '',
-    ))
-    .costmdls(costmdls)
-    .build();
+  return Lucid.new(new ConwayCompatBlockfrost(url, apiKey), network);
 }
 
 // ── Datum helpers (shared by listing and rental flows) ────────────────────────
@@ -350,9 +273,6 @@ async function rentNft(
 
   if (datum.renter !== null) {
     throw new Error(`"${nftAssetName}" already has a registered renter.`);
-  }
-  if (BigInt(Date.now()) >= datum.draw_date) {
-    throw new Error(`The draw date for "${nftAssetName}" has already passed.`);
   }
 
   // 90% to owner, 10% to project; integer division matches the on-chain validator.
