@@ -268,13 +268,16 @@ async function claimBackRentalUtxos(
       const datum = decodeDatum(utxo, lucid);
       console.log(`  ${datum.nft_asset_name} → ${datum.owner.slice(0, 24)}…`);
 
+      // nativeUplc: false — the Node.js CML WASM cannot evaluate PlutusV3
+      // scripts natively (unlike the browser build). Skip WASM evaluation
+      // here; the script is injected into the witness set via CML below.
       const txComplete = await lucid
         .newTx()
         .collectFrom([utxo], Data.to(new Constr(2, [])))
         .payToAddress(datum.owner, utxo.assets)
         .addSigner(PROJECT_WALLET_ADDRESS)
         .validFrom(Number(datum.draw_date) + 1000)
-        .complete();
+        .complete({ nativeUplc: false });
 
       const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
       const scripts = (C as any).PlutusScripts.new();
