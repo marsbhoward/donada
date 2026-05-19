@@ -433,6 +433,8 @@ export default function DonadaPlatform() {
         const lines = text.trim().split('\n').slice(1);
         const now = new Date();
 
+        // CSV times are authored in CST (UTC-6). Add this offset to get UTC.
+        const CST_OFFSET_HOURS = 6;
         const parseRow = (line: string): { date: Date; planned: boolean } | null => {
           const [, dateStr, timeStr, plannedRaw] = line.split(',');
           if (!dateStr || !timeStr) return null;
@@ -444,7 +446,8 @@ export default function DonadaPlatform() {
           if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
           if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
           const planned = plannedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
-          return { date: new Date(Date.UTC(year, month - 1, day, hour + 6, minute)), planned };
+          // Convert CST → UTC before constructing the Date
+          return { date: new Date(Date.UTC(year, month - 1, day, hour + CST_OFFSET_HOURS, minute)), planned };
         };
 
         const allRows = lines

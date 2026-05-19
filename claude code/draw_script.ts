@@ -85,6 +85,24 @@ class ConwayCompatBlockfrost extends Blockfrost {
 
 // ── Draw date check ───────────────────────────────────────────────────────────
 
+// CSV times are authored in CST (UTC-6). Add this offset to get UTC.
+const CST_OFFSET_HOURS = 6;
+
+function parseCsvRowToUtc(line: string): { date: Date; planned: boolean } | null {
+  const [, dateStr, timeStr, plannedRaw] = line.split(',');
+  if (!dateStr || !timeStr) return null;
+  const [year, month, day] = dateStr.trim().split('-').map(Number);
+  const match = timeStr.trim().match(/(\d+):(\d+)(am|pm)/i);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
+  if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
+  const planned = plannedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
+  // Convert CST → UTC before constructing the Date
+  return { date: new Date(Date.UTC(year, month - 1, day, hour + CST_OFFSET_HOURS, minute)), planned };
+}
+
 interface ScheduledDraw {
   date:    Date;
   planned: boolean;
@@ -95,19 +113,9 @@ function loadScheduledDraw(): ScheduledDraw | null {
   const lines   = readFileSync(csvPath, 'utf-8').trim().split('\n').slice(1);
   const now     = new Date();
 
-  const rows = lines.map(line => {
-    const [, dateStr, timeStr, plannedRaw] = line.split(',');
-    if (!dateStr || !timeStr) return null;
-    const [year, month, day] = dateStr.trim().split('-').map(Number);
-    const match = timeStr.trim().match(/(\d+):(\d+)(am|pm)/i);
-    if (!match) return null;
-    let hour = Number(match[1]);
-    const minute = Number(match[2]);
-    if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
-    if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
-    const planned = plannedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
-    return { date: new Date(Date.UTC(year, month - 1, day, hour + 6, minute)), planned };
-  }).filter((r): r is ScheduledDraw => r !== null);
+  const rows = lines
+    .map(parseCsvRowToUtc)
+    .filter((r): r is ScheduledDraw => r !== null);
 
   // Return the nearest draw date to now (past or future)
   return rows.reduce<ScheduledDraw | null>((best, r) => {
