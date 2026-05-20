@@ -164,7 +164,6 @@ async function patchLucidV3CostModels(lucid: Lucid, network: 'Preview' | 'Mainne
     .key_deposit(C.BigNum.from_str(pp.keyDeposit.toString()))
     .max_value_size(pp.maxValSize)
     .max_tx_size(pp.maxTxSize)
-    .prefer_pure_change(true)
     .ex_unit_prices(_exUnitPrices)
     .cost_models(configCostmdls)
     .collateral_percentage(pp.collateralPercentage)
