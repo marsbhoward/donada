@@ -635,6 +635,45 @@ async function rentNft(
   };
 }
 
+async function claimBackExpiredRentals(
+  projectWalletAddress: string,
+  validator: ValidatorSetup,
+  lucid: Lucid,
+  onProgress: (msg: string) => void,
+): Promise<string[]> {
+  const { contractAddress, compiledCode } = validator;
+  const utxos = await lucid.utxosAt(contractAddress);
+  const now = BigInt(Date.now());
+
+  const expired = utxos.filter(u => {
+    try { return decodeDatum(u, lucid).draw_date <= now; }
+    catch { return false; }
+  });
+
+  if (expired.length === 0) throw new Error('No expired rental UTxOs found at the contract address.');
+
+  onProgress(`Found ${expired.length} expired rental UTxO(s).`);
+  const hashes: string[] = [];
+
+  for (const utxo of expired) {
+    const datum = decodeDatum(utxo, lucid);
+    onProgress(`Claiming back ${datum.nft_asset_name}…`);
+
+    const redeemerHex = Data.to(new Constr(2, [])); // ClaimBack = index 2
+    const txObj = lucid
+      .newTx()
+      .payToAddress(datum.owner, utxo.assets)
+      .addSigner(projectWalletAddress)
+      .validFrom(Number(datum.draw_date) + 1000);
+
+    const txHash = await completeV3Tx(txObj, utxo, redeemerHex, lucid, compiledCode);
+    onProgress(`Done: ${txHash.slice(0, 12)}…`);
+    hashes.push(txHash);
+  }
+
+  return hashes;
+}
+
 async function cancelListingNft(
   nftAssetName: string,
   ownerAddress: string,
@@ -722,6 +761,11 @@ export default function DonadaPlatform() {
   const [drawTxHash, setDrawTxHash] = useState<string | null>(null);
   const [drawError, setDrawError] = useState<string | null>(null);
   const [drawLog, setDrawLog] = useState<string[]>([]);
+
+  // Admin claim-back flow
+  const [isClaimingBack, setIsClaimingBack] = useState(false);
+  const [claimBackLog, setClaimBackLog] = useState<string[]>([]);
+  const [claimBackError, setClaimBackError] = useState<string | null>(null);
 
   // Invalidate validator cache whenever the network changes so the address is re-derived
   useEffect(() => { _validatorCache = null; }, [network]);
@@ -1206,6 +1250,32 @@ export default function DonadaPlatform() {
     }
   };
 
+  // ----- Admin: claim back all expired rental UTxOs -----
+  const handleClaimBack = async () => {
+    if (!connectedWallet || !fullWalletAddress) return;
+    setIsClaimingBack(true);
+    setClaimBackLog([]);
+    setClaimBackError(null);
+    try {
+      const lucid = await initLucid(network);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lucid.selectWallet(connectedWallet.api as any);
+      const validator = await loadRentalValidator(lucid);
+      await claimBackExpiredRentals(
+        fullWalletAddress,
+        validator,
+        lucid,
+        msg => setClaimBackLog(prev => [...prev, msg]),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('ClaimBack failed:', err);
+      setClaimBackError(msg);
+    } finally {
+      setIsClaimingBack(false);
+    }
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
@@ -1413,6 +1483,29 @@ export default function DonadaPlatform() {
           {drawError && (
             <p style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
               Error: {drawError}
+            </p>
+          )}
+
+          <hr className="section-break" style={{ margin: '1rem 0' }} />
+
+          <div className="action-block">
+            <div className="action-text">Claim Back Expired Rentals</div>
+            <button
+              className="select-btn small"
+              disabled={isClaimingBack}
+              onClick={handleClaimBack}
+            >
+              {isClaimingBack ? 'Claiming…' : 'Claim Back'}
+            </button>
+          </div>
+          {claimBackLog.length > 0 && (
+            <div style={{ fontSize: '0.75rem', marginTop: '0.5rem' }}>
+              {claimBackLog.map((line, i) => <div key={i}>{line}</div>)}
+            </div>
+          )}
+          {claimBackError && (
+            <p style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
+              Error: {claimBackError}
             </p>
           )}
         </section>
