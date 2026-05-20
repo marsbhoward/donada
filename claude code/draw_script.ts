@@ -95,13 +95,6 @@ let _v3CostValues: number[] | null = null;
 let _linearFee:    any = null;
 let _exUnitPrices: any = null;
 
-function toCmlInt(value: number): any {
-  const abs = Math.abs(Math.round(value));
-  return value < 0
-    ? (C as any).Int.new_negative(C.BigNum.from_str(abs.toString()))
-    : (C as any).Int.new(C.BigNum.from_str(abs.toString()));
-}
-
 function buildV3LangViewsCbor(costs: number[]): Uint8Array {
   function pushCborInt(buf: number[], val: number): void {
     const n = val >= 0 ? val : -val - 1;
@@ -132,7 +125,7 @@ function hashScriptDataV3(redeemers: any, v3Costs: number[]): any {
   return (C as any).ScriptDataHash.from_bytes(hash);
 }
 
-async function patchLucidV3CostModels(lucid: Lucid, network: 'Preview' | 'Mainnet'): Promise<void> {
+async function patchLucidV3CostModels(lucid: Lucid): Promise<void> {
   const pp = await (lucid as any).provider.getProtocolParameters();
   const cm = (pp.costModels ?? {}) as Record<string, Record<string, number>>;
 
@@ -144,37 +137,6 @@ async function patchLucidV3CostModels(lucid: Lucid, network: 'Preview' | 'Mainne
 
   _linearFee    = C.LinearFee.new(C.BigNum.from_str(pp.minFeeA.toString()), C.BigNum.from_str(pp.minFeeB.toString()));
   _exUnitPrices = (C as any).ExUnitPrices.from_float(pp.priceMem, pp.priceStep);
-
-  const slotConfig = network === 'Mainnet'
-    ? { zeroTime: 1596059091000, zeroSlot: 4492800, slotLength: 1000 }
-    : { zeroTime: 1666656000000, zeroSlot: 0, slotLength: 1000 };
-
-  const configCostmdls = (C as any).Costmdls.new();
-  const cfgV1 = (C as any).CostModel.new();
-  Object.values(cm.PlutusV1 ?? {}).forEach((cost: number, i: number) => cfgV1.set(i, toCmlInt(cost)));
-  configCostmdls.insert((C as any).Language.new_plutus_v1(), cfgV1);
-  const cfgV2 = (C as any).CostModel.new_plutus_v2();
-  Object.values(cm.PlutusV2 ?? {}).forEach((cost: number, i: number) => cfgV2.set(i, toCmlInt(cost)));
-  configCostmdls.insert((C as any).Language.new_plutus_v2(), cfgV2);
-
-  (lucid as any).txBuilderConfig = (C as any).TransactionBuilderConfigBuilder.new()
-    .coins_per_utxo_byte(C.BigNum.from_str(pp.coinsPerUtxoByte.toString()))
-    .fee_algo(_linearFee)
-    .pool_deposit(C.BigNum.from_str(pp.poolDeposit.toString()))
-    .key_deposit(C.BigNum.from_str(pp.keyDeposit.toString()))
-    .max_value_size(pp.maxValSize)
-    .max_tx_size(pp.maxTxSize)
-    .ex_unit_prices(_exUnitPrices)
-    .cost_models(configCostmdls)
-    .collateral_percentage(pp.collateralPercentage)
-    .max_collateral_inputs(pp.maxCollateralInputs)
-    .slot_config(
-      C.BigNum.from_str(slotConfig.zeroTime.toString()),
-      C.BigNum.from_str(slotConfig.zeroSlot.toString()),
-      slotConfig.slotLength,
-    )
-    .blockfrost((lucid as any).provider)
-    .build();
 }
 
 function utxoToCml(utxo: UTxO): any {
@@ -565,7 +527,7 @@ async function main() {
   // Step 2 — Initialise Lucid
   const lucid = await Lucid.new(new ConwayCompatBlockfrost(BLOCKFROST_URL, BLOCKFROST_KEY), NETWORK);
   lucid.selectWalletFromSeed(SEED);
-  await patchLucidV3CostModels(lucid, NETWORK);
+  await patchLucidV3CostModels(lucid);
 
   const signerAddress = await lucid.wallet.address();
   if (signerAddress !== PROJECT_WALLET_ADDRESS) {
