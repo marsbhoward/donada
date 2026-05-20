@@ -26,13 +26,16 @@
 //   - All other entries: 100% to winner address
 // =============================================================================
 
-import { Lucid, Blockfrost, Data, Constr, UTxO, fromHex, toText, C } from "lucid-cardano";
+import { Lucid, Blockfrost, Data, Constr, UTxO, fromHex, toHex, toText, C, applyDoubleCborEncoding } from "lucid-cardano";
 import type { ProtocolParameters } from "lucid-cardano";
 import { readFileSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
 import { createHash } from "crypto";
+
+const _require = createRequire(import.meta.url);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = dirname(__filename);
@@ -82,6 +85,263 @@ class ConwayCompatBlockfrost extends Blockfrost {
     if (patched.PlutusV2) patched.PlutusV2 = Object.fromEntries(Object.entries(patched.PlutusV2).slice(0, 175));
     return { ...params, costModels: patched as ProtocolParameters['costModels'] };
   }
+}
+
+// ── PlutusV3 transaction machinery ───────────────────────────────────────────
+// Mirrors completeV3Tx in DonadaPlatform.tsx. lucid-cardano 0.10.7 has no native
+// V3 support — we build the witness set, fee, and script_data_hash manually.
+
+let _v3CostValues: number[] | null = null;
+let _linearFee:    any = null;
+let _exUnitPrices: any = null;
+
+function toCmlInt(value: number): any {
+  const abs = Math.abs(Math.round(value));
+  return value < 0
+    ? (C as any).Int.new_negative(C.BigNum.from_str(abs.toString()))
+    : (C as any).Int.new(C.BigNum.from_str(abs.toString()));
+}
+
+function buildV3LangViewsCbor(costs: number[]): Uint8Array {
+  function pushCborInt(buf: number[], val: number): void {
+    const n = val >= 0 ? val : -val - 1;
+    const major = val >= 0 ? 0x00 : 0x20;
+    if (n <= 23)          buf.push(major | n);
+    else if (n <= 0xFF)   buf.push(major | 0x18, n);
+    else if (n <= 0xFFFF) buf.push(major | 0x19, (n >> 8) & 0xFF, n & 0xFF);
+    else                  buf.push(major | 0x1A, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF);
+  }
+  const buf: number[] = [];
+  buf.push(0xA1, 0x02);
+  const len = costs.length;
+  if (len <= 23)        buf.push(0x80 | len);
+  else if (len <= 0xFF) buf.push(0x98, len);
+  else                  buf.push(0x99, (len >> 8) & 0xFF, len & 0xFF);
+  for (const c of costs) pushCborInt(buf, Math.round(c));
+  return new Uint8Array(buf);
+}
+
+function hashScriptDataV3(redeemers: any, v3Costs: number[]): any {
+  const b2b = _require('blake2b') as any;
+  const rdmrs     = redeemers.to_bytes() as Uint8Array;
+  const langViews = buildV3LangViewsCbor(v3Costs);
+  const preimage  = new Uint8Array(rdmrs.length + langViews.length);
+  preimage.set(rdmrs, 0);
+  preimage.set(langViews, rdmrs.length);
+  const hash = b2b(32).update(preimage).digest() as Uint8Array;
+  return (C as any).ScriptDataHash.from_bytes(hash);
+}
+
+async function patchLucidV3CostModels(lucid: Lucid, network: 'Preview' | 'Mainnet'): Promise<void> {
+  const pp = await (lucid as any).provider.getProtocolParameters();
+  const cm = (pp.costModels ?? {}) as Record<string, Record<string, number>>;
+
+  if (cm.PlutusV3) {
+    _v3CostValues = Object.values(cm.PlutusV3) as number[];
+  } else {
+    console.warn('[V3Patch] no PlutusV3 cost models in protocol params');
+  }
+
+  _linearFee    = C.LinearFee.new(C.BigNum.from_str(pp.minFeeA.toString()), C.BigNum.from_str(pp.minFeeB.toString()));
+  _exUnitPrices = (C as any).ExUnitPrices.from_float(pp.priceMem, pp.priceStep);
+
+  const slotConfig = network === 'Mainnet'
+    ? { zeroTime: 1596059091000, zeroSlot: 4492800, slotLength: 1000 }
+    : { zeroTime: 1666656000000, zeroSlot: 0, slotLength: 1000 };
+
+  const configCostmdls = (C as any).Costmdls.new();
+  const cfgV1 = (C as any).CostModel.new();
+  Object.values(cm.PlutusV1 ?? {}).forEach((cost: number, i: number) => cfgV1.set(i, toCmlInt(cost)));
+  configCostmdls.insert((C as any).Language.new_plutus_v1(), cfgV1);
+  const cfgV2 = (C as any).CostModel.new_plutus_v2();
+  Object.values(cm.PlutusV2 ?? {}).forEach((cost: number, i: number) => cfgV2.set(i, toCmlInt(cost)));
+  configCostmdls.insert((C as any).Language.new_plutus_v2(), cfgV2);
+
+  (lucid as any).txBuilderConfig = (C as any).TransactionBuilderConfigBuilder.new()
+    .coins_per_utxo_byte(C.BigNum.from_str(pp.coinsPerUtxoByte.toString()))
+    .fee_algo(_linearFee)
+    .pool_deposit(C.BigNum.from_str(pp.poolDeposit.toString()))
+    .key_deposit(C.BigNum.from_str(pp.keyDeposit.toString()))
+    .max_value_size(pp.maxValSize)
+    .max_tx_size(pp.maxTxSize)
+    .prefer_pure_change(true)
+    .ex_unit_prices(_exUnitPrices)
+    .cost_models(configCostmdls)
+    .collateral_percentage(pp.collateralPercentage)
+    .max_collateral_inputs(pp.maxCollateralInputs)
+    .slot_config(
+      C.BigNum.from_str(slotConfig.zeroTime.toString()),
+      C.BigNum.from_str(slotConfig.zeroSlot.toString()),
+      slotConfig.slotLength,
+    )
+    .blockfrost((lucid as any).provider)
+    .build();
+}
+
+function utxoToCml(utxo: UTxO): any {
+  const address = (() => {
+    try { return C.Address.from_bech32(utxo.address); }
+    catch { return (C as any).ByronAddress.from_base58(utxo.address).to_address(); }
+  })();
+
+  const multiAsset = (C as any).MultiAsset.new();
+  const lovelace   = utxo.assets['lovelace'];
+  const units      = Object.keys(utxo.assets);
+  const policies   = Array.from(new Set(
+    units.filter(u => u !== 'lovelace').map(u => u.slice(0, 56))
+  )) as string[];
+
+  policies.forEach(policy => {
+    const policyUnits = units.filter(u => u.slice(0, 56) === policy);
+    const assetMap    = (C as any).Assets.new();
+    policyUnits.forEach(unit => {
+      assetMap.insert(
+        (C as any).AssetName.new(fromHex(unit.slice(56))),
+        C.BigNum.from_str(utxo.assets[unit].toString()),
+      );
+    });
+    multiAsset.insert((C as any).ScriptHash.from_bytes(fromHex(policy)), assetMap);
+  });
+
+  const value = C.Value.new(C.BigNum.from_str(lovelace ? lovelace.toString() : '0'));
+  if (units.length > 1 || !lovelace) value.set_multiasset(multiAsset);
+
+  const output = C.TransactionOutput.new(address, value);
+  if (utxo.datumHash) {
+    output.set_datum((C as any).Datum.new_data_hash(
+      (C as any).DataHash.from_bytes(fromHex(utxo.datumHash))
+    ));
+  } else if (utxo.datum) {
+    output.set_datum((C as any).Datum.new_data(
+      (C as any).Data.new(C.PlutusData.from_bytes(fromHex(utxo.datum)))
+    ));
+  }
+
+  return (C as any).TransactionUnspentOutput.new(
+    (C as any).TransactionInput.new(
+      (C as any).TransactionHash.from_bytes(fromHex(utxo.txHash)),
+      C.BigNum.from_str(utxo.outputIndex.toString()),
+    ),
+    output,
+  );
+}
+
+function findCollateral(walletUtxos: any): any | null {
+  for (let i = 0; i < walletUtxos.len(); i++) {
+    const u = walletUtxos.get(i);
+    if (!u.output().amount().multiasset()) return u;
+  }
+  return null;
+}
+
+async function completeV3Tx(
+  txObj:        any,
+  scriptUtxo:   UTxO,
+  redeemerHex:  string,
+  lucid:        Lucid,
+  compiledCode: string,
+): Promise<string> {
+  if (!_v3CostValues || !_linearFee || !_exUnitPrices) {
+    throw new Error('V3 cost models / fee params not initialised — call patchLucidV3CostModels first');
+  }
+
+  let task = (txObj as any).tasks.shift();
+  while (task) { await task(txObj as any); task = (txObj as any).tasks.shift(); }
+
+  const cmlScriptUtxo = utxoToCml(scriptUtxo);
+  const redeemerData  = C.PlutusData.from_bytes(fromHex(redeemerHex));
+  txObj.txBuilder.add_input(
+    cmlScriptUtxo,
+    (C as any).ScriptWitness.new_plutus_witness(
+      C.PlutusWitness.new(redeemerData, undefined, undefined)
+    ),
+  );
+
+  const walletUtxos = await lucid.wallet.getUtxosCore();
+  const collateral  = findCollateral(walletUtxos);
+  if (!collateral) throw new Error('No pure-ADA UTxO available for collateral');
+  txObj.txBuilder.add_collateral(collateral);
+
+  const changeAddress = C.Address.from_bech32(await lucid.wallet.address());
+  txObj.txBuilder.add_inputs_from(walletUtxos, changeAddress, Uint32Array.from([200, 1000, 1500, 800, 800, 5000]));
+  txObj.txBuilder.balance(changeAddress, undefined);
+
+  const partialTx    = txObj.txBuilder.build_tx();
+  const zeroRedeemers = partialTx.witness_set().redeemers();
+  if (!zeroRedeemers || zeroRedeemers.len() === 0) throw new Error('build_tx() produced no redeemers');
+
+  const synthRedeemers = (C as any).Redeemers.new();
+  for (let i = 0; i < zeroRedeemers.len(); i++) {
+    const r = zeroRedeemers.get(i);
+    synthRedeemers.add((C as any).Redeemer.new(
+      r.tag(), r.index(), r.data(),
+      C.ExUnits.new(C.BigNum.from_str('2000000'), C.BigNum.from_str('1000000000')),
+    ));
+  }
+
+  const plutusScript = C.PlutusScript.from_bytes(fromHex(applyDoubleCborEncoding(compiledCode)));
+  const v3Scripts    = (C as any).PlutusScripts.new();
+  v3Scripts.add(plutusScript);
+
+  const mockWset = C.TransactionWitnessSet.new();
+  mockWset.set_redeemers(synthRedeemers);
+  mockWset.set_plutus_v3_scripts(v3Scripts);
+  const mockTx = C.Transaction.new(partialTx.body(), mockWset, partialTx.auxiliary_data());
+  const F0 = BigInt(partialTx.body().fee().to_str());
+  const F1 = BigInt(((C as any).min_fee(mockTx, _linearFee, _exUnitPrices) as any).to_str()) + 10000n;
+  const feeDelta  = F1 - F0;
+  const finalFee  = C.BigNum.from_str(F1.toString());
+
+  const origOutputs = partialTx.body().outputs();
+  const numOut      = origOutputs.len();
+  if (numOut === 0) throw new Error('build_tx() produced no outputs');
+
+  const newOutputs = (C as any).TransactionOutputs.new();
+  for (let i = 0; i < numOut - 1; i++) {
+    newOutputs.add(C.TransactionOutput.from_bytes(origOutputs.get(i).to_bytes()));
+  }
+  const changeOut    = origOutputs.get(numOut - 1);
+  const changeVal    = changeOut.amount();
+  const newLovelace  = BigInt(changeVal.coin().to_str()) - feeDelta;
+  if (newLovelace < 0n) throw new Error(`feeDelta (${feeDelta}) exceeds change output`);
+  const newChangeVal = C.Value.from_bytes(changeVal.to_bytes());
+  newChangeVal.set_coin(C.BigNum.from_str(newLovelace.toString()));
+  const newChangeOut = C.TransactionOutput.new(changeOut.address(), newChangeVal);
+  const changeDatum  = changeOut.datum();
+  if (changeDatum) newChangeOut.set_datum(changeDatum);
+  newOutputs.add(newChangeOut);
+
+  const origBody    = partialTx.body();
+  const newBody     = C.TransactionBody.new(origBody.inputs(), newOutputs, finalFee, origBody.ttl());
+  const certs       = origBody.certs();               if (certs)       newBody.set_certs(certs);
+  const withdrawals = origBody.withdrawals();         if (withdrawals) newBody.set_withdrawals(withdrawals);
+  const validStart  = origBody.validity_start_interval(); if (validStart) newBody.set_validity_start_interval(validStart);
+  const mint        = origBody.mint();                if (mint)        newBody.set_mint(mint);
+  const collateralI = origBody.collateral();          if (collateralI) newBody.set_collateral(collateralI);
+  const reqSigners  = origBody.required_signers();    if (reqSigners)  newBody.set_required_signers(reqSigners);
+  const networkId   = origBody.network_id();          if (networkId)   newBody.set_network_id(networkId);
+  const colReturn   = origBody.collateral_return();   if (colReturn)   newBody.set_collateral_return(colReturn);
+  const totalCol    = origBody.total_collateral();    if (totalCol)    newBody.set_total_collateral(totalCol);
+  const refInputs   = origBody.reference_inputs();    if (refInputs)   newBody.set_reference_inputs(refInputs);
+
+  const scriptDataHash = hashScriptDataV3(synthRedeemers, _v3CostValues!);
+  newBody.set_script_data_hash(scriptDataHash);
+
+  const unsignedWset = C.TransactionWitnessSet.new();
+  unsignedWset.set_plutus_v3_scripts(v3Scripts);
+  unsignedWset.set_redeemers(synthRedeemers);
+
+  const txForSigning = C.Transaction.new(newBody, unsignedWset, partialTx.auxiliary_data());
+  const walletWset   = await (lucid as any).wallet.signTx(txForSigning);
+
+  const signedWset = C.TransactionWitnessSet.new();
+  signedWset.set_plutus_v3_scripts(v3Scripts);
+  signedWset.set_redeemers(synthRedeemers);
+  const vkeys = walletWset.vkeys();
+  if (vkeys) signedWset.set_vkeys(vkeys);
+
+  const signedTx = C.Transaction.new(newBody, signedWset, partialTx.auxiliary_data());
+  return await (lucid as any).provider.submitTx(toHex(signedTx.to_bytes()));
 }
 
 // ── Draw date check ───────────────────────────────────────────────────────────
@@ -268,23 +528,16 @@ async function claimBackRentalUtxos(
       const datum = decodeDatum(utxo, lucid);
       console.log(`  ${datum.nft_asset_name} → ${datum.owner.slice(0, 24)}…`);
 
-      const txComplete = await lucid
+      // ClaimBack redeemer = Constr(2, []) (index 2 in RentalRedeemer enum).
+      // collectFrom is NOT queued — completeV3Tx adds the script input manually.
+      const redeemerHex = Data.to(new Constr(2, []));
+      const txObj = lucid
         .newTx()
-        .collectFrom([utxo], Data.to(new Constr(2, [])))
         .payToAddress(datum.owner, utxo.assets)
         .addSigner(PROJECT_WALLET_ADDRESS)
-        .validFrom(Number(datum.draw_date) + 1000)
-        .complete();
+        .validFrom(Number(datum.draw_date) + 1000);
 
-      const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
-      const scripts = (C as any).PlutusScripts.new();
-      scripts.add(plutusScript);
-      const v3Witness = C.TransactionWitnessSet.new();
-      v3Witness.set_plutus_v3_scripts(scripts);
-      (txComplete as any).witnessSetBuilder.add_existing(v3Witness);
-
-      const signed = await txComplete.sign().complete();
-      const txHash = await signed.submit();
+      const txHash = await completeV3Tx(txObj, utxo, redeemerHex, lucid, compiledCode);
       console.log(`  Claimed! Tx: ${txHash}`);
     } catch (err) {
       console.error(`  Failed (${utxo.txHash}#${utxo.outputIndex}):`, err);
@@ -313,6 +566,7 @@ async function main() {
   // Step 2 — Initialise Lucid
   const lucid = await Lucid.new(new ConwayCompatBlockfrost(BLOCKFROST_URL, BLOCKFROST_KEY), NETWORK);
   lucid.selectWalletFromSeed(SEED);
+  await patchLucidV3CostModels(lucid, NETWORK);
 
   const signerAddress = await lucid.wallet.address();
   if (signerAddress !== PROJECT_WALLET_ADDRESS) {

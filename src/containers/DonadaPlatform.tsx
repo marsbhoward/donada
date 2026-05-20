@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import RentModal from '../components/RentModal';
 import { BrowserWallet } from '@meshsdk/core';
 import { fetchNftMetadata } from '../utils/nftMetadata';
-import { Lucid, Blockfrost, fromText, toText, Data, Constr, UTxO, C, applyDoubleCborEncoding, fromHex, ProtocolParameters } from 'lucid-cardano';
+import { Lucid, Blockfrost, fromText, toText, Data, Constr, UTxO, C, fromHex, toHex, ProtocolParameters, applyDoubleCborEncoding } from 'lucid-cardano';
 
 // ── Contract constants ────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2e
 
 interface ValidatorSetup {
   contractAddress: string;
-  compiledCode: string; // double-CBOR encoded hex for inline script attachment
+  compiledCode: string; // raw single-CBOR hex for witness set injection
 }
 
 let _validatorCache: ValidatorSetup | null = null;
@@ -39,7 +39,7 @@ async function loadRentalValidator(lucid: Lucid): Promise<ValidatorSetup> {
 
   _validatorCache = {
     contractAddress,
-    compiledCode: applyDoubleCborEncoding(spendValidator.compiledCode),
+    compiledCode: spendValidator.compiledCode,
   };
   return _validatorCache;
 }
@@ -109,13 +109,123 @@ class ConwayCompatBlockfrost extends Blockfrost {
     const patched = { ...cm };
     if (patched.PlutusV1) patched.PlutusV1 = Object.fromEntries(Object.entries(patched.PlutusV1).slice(0, 166));
     if (patched.PlutusV2) patched.PlutusV2 = Object.fromEntries(Object.entries(patched.PlutusV2).slice(0, 175));
+    // PlutusV3 is NOT truncated — patchLucidV3CostModels stores all entries in _v3OnlyCostmdls
+    // for hash_script_data, and the node uses all 350 entries when computing the expected hash.
     return { ...params, costModels: patched as ProtocolParameters['costModels'] };
   }
 }
 
+// C.Int.new only accepts non-negative BigNum; V3 cost models include negative values.
+function toCmlInt(value: number): any {
+  const abs = Math.abs(Math.round(value));
+  return value < 0
+    ? (C as any).Int.new_negative(C.BigNum.from_str(abs.toString()))
+    : (C as any).Int.new(C.BigNum.from_str(abs.toString()));
+}
+
+// CML's CostModel.new_plutus_v3() and Costmdls.from_bytes() are both capped at 179
+// entries in this version of lucid-cardano, but Preview testnet has 350 V3 cost model
+// entries. We bypass CML entirely: build the language-views CBOR manually and compute
+// hash_script_data ourselves via blake2b-256 on the raw preimage bytes.
+// Language views CBOR format for V3: {2: [cost0, cost1, ..., costN-1]}
+function buildV3LangViewsCbor(costs: number[]): Uint8Array {
+  function pushCborInt(buf: number[], val: number): void {
+    const n = val >= 0 ? val : -val - 1;
+    const major = val >= 0 ? 0x00 : 0x20;
+    if (n <= 23)          buf.push(major | n);
+    else if (n <= 0xFF)   buf.push(major | 0x18, n);
+    else if (n <= 0xFFFF) buf.push(major | 0x19, (n >> 8) & 0xFF, n & 0xFF);
+    else                  buf.push(major | 0x1A, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF);
+  }
+  const buf: number[] = [];
+  buf.push(0xA1, 0x02);    // map(1), key 2 = PlutusV3
+  const len = costs.length;
+  if (len <= 23)        buf.push(0x80 | len);
+  else if (len <= 0xFF) buf.push(0x98, len);
+  else                  buf.push(0x99, (len >> 8) & 0xFF, len & 0xFF);
+  for (const c of costs) pushCborInt(buf, Math.round(c));
+  return new Uint8Array(buf);
+}
+
+// hash_script_data preimage = redeemers_cbor || 0xA0 (empty datums map) || lang_views_cbor
+// Blake2b-256 of the concatenation, wrapped in ScriptDataHash.
+function hashScriptDataV3(redeemers: any, v3Costs: number[]): any {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const b2b = require('blake2b') as any;
+  const rdmrs     = redeemers.to_bytes() as Uint8Array;
+  const langViews = buildV3LangViewsCbor(v3Costs);
+  // Preimage = redeemers || lang_views. No datums section when datums is None —
+  // confirmed by decoding the node's error blob: redeemers end immediately before A1 02.
+  const preimage = new Uint8Array(rdmrs.length + langViews.length);
+  preimage.set(rdmrs, 0);
+  preimage.set(langViews, rdmrs.length);
+  const hash = b2b(32).update(preimage).digest() as Uint8Array;
+  return (C as any).ScriptDataHash.from_bytes(hash);
+}
+
+// V3 cost model raw values (all 350 entries) stored after initLucid.
+// _linearFee and _exUnitPrices are stored for min_fee computation.
+// V3 is NOT in txBuilderConfig — including it causes CML to panic inside
+// add_inputs_from/balance because the V3 script is never passed to txBuilder.
+let _v3CostValues: number[] | null = null;
+let _linearFee:    any = null; // C.LinearFee
+let _exUnitPrices: any = null; // C.ExUnitPrices
+
+async function patchLucidV3CostModels(lucid: Lucid, network: Network): Promise<void> {
+  const provider = (lucid as any).provider;
+  const pp = await provider.getProtocolParameters();
+  const cm = (pp.costModels ?? {}) as Record<string, Record<string, number>>;
+
+  const slotConfig = network === 'Mainnet'
+    ? { zeroTime: 1596059091000, zeroSlot: 4492800, slotLength: 1000 }
+    : { zeroTime: 1666656000000, zeroSlot: 0, slotLength: 1000 };
+
+  // V3-only cost models — hash_script_data must include ONLY the languages present.
+  // Using V1+V2+V3 when only a V3 script is in the tx produces a different hash.
+  if (cm.PlutusV3) {
+    _v3CostValues = Object.values(cm.PlutusV3) as number[];
+  } else {
+    console.warn('[V3Patch] no PlutusV3 cost models in protocol params');
+  }
+
+  // ── Build txBuilderConfig with V1+V2 ONLY ────────────────────────────────────
+  // Omitting V3 here prevents CML from looking up the V3 script during coin selection /
+  // fee estimation — which would throw null because we never call add_plutus_v3_script().
+  const configCostmdls = (C as any).Costmdls.new();
+
+  const cfgV1 = (C as any).CostModel.new();
+  Object.values(cm.PlutusV1 ?? {}).forEach((cost: number, i: number) => cfgV1.set(i, toCmlInt(cost)));
+  configCostmdls.insert((C as any).Language.new_plutus_v1(), cfgV1);
+
+  const cfgV2 = (C as any).CostModel.new_plutus_v2();
+  Object.values(cm.PlutusV2 ?? {}).forEach((cost: number, i: number) => cfgV2.set(i, toCmlInt(cost)));
+  configCostmdls.insert((C as any).Language.new_plutus_v2(), cfgV2);
+
+  _linearFee    = C.LinearFee.new(C.BigNum.from_str(pp.minFeeA.toString()), C.BigNum.from_str(pp.minFeeB.toString()));
+  _exUnitPrices = (C as any).ExUnitPrices.from_float(pp.priceMem, pp.priceStep);
+
+  (lucid as any).txBuilderConfig = (C as any).TransactionBuilderConfigBuilder.new()
+    .coins_per_utxo_byte(C.BigNum.from_str(pp.coinsPerUtxoByte.toString()))
+    .fee_algo(_linearFee)
+    .key_deposit(C.BigNum.from_str(pp.keyDeposit.toString()))
+    .pool_deposit(C.BigNum.from_str(pp.poolDeposit.toString()))
+    .max_tx_size(pp.maxTxSize)
+    .max_value_size(pp.maxValSize)
+    .collateral_percentage(pp.collateralPercentage)
+    .max_collateral_inputs(pp.maxCollateralInputs)
+    .max_tx_ex_units(C.ExUnits.new(C.BigNum.from_str(pp.maxTxExMem.toString()), C.BigNum.from_str(pp.maxTxExSteps.toString())))
+    .ex_unit_prices(_exUnitPrices)
+    .slot_config(C.BigNum.from_str(slotConfig.zeroTime.toString()), C.BigNum.from_str(slotConfig.zeroSlot.toString()), slotConfig.slotLength)
+    .blockfrost((C as any).Blockfrost.new((provider?.url ?? '') + '/utils/txs/evaluate', provider?.projectId ?? ''))
+    .costmdls(configCostmdls)
+    .build();
+}
+
 async function initLucid(network: Network): Promise<Lucid> {
   const { url, apiKey } = blockfrostConfig(network);
-  return Lucid.new(new ConwayCompatBlockfrost(url, apiKey), network);
+  const lucid = await Lucid.new(new ConwayCompatBlockfrost(url, apiKey), network);
+  await patchLucidV3CostModels(lucid, network);
+  return lucid;
 }
 
 // ── Datum helpers (shared by listing and rental flows) ────────────────────────
@@ -260,6 +370,216 @@ function buildRentRedeemer(renterAddress: string, lucid: Lucid): string {
   return Data.to(new Constr(1, [addressToData(lucid, renterAddress)]));
 }
 
+// ── V3 spend transaction helpers ──────────────────────────────────────────────
+//
+// lucid's construct() throws null for V3 scripts (CML lacks V3 support).
+// lucid's witnessSetBuilder silently drops V3 scripts (no add_plutus_v3_script).
+// We bypass both by building manually: add_input → balance → build_tx → assemble
+// witness set directly → sign via wallet API → submit via provider.
+
+function utxoToCml(utxo: UTxO): any {
+  const address = (() => {
+    try { return C.Address.from_bech32(utxo.address); }
+    catch { return (C as any).ByronAddress.from_base58(utxo.address).to_address(); }
+  })();
+
+  const multiAsset = (C as any).MultiAsset.new();
+  const lovelace = utxo.assets['lovelace'];
+  const units = Object.keys(utxo.assets);
+  const policies = Array.from(new Set(
+    units.filter(u => u !== 'lovelace').map(u => u.slice(0, 56))
+  )) as string[];
+
+  policies.forEach(policy => {
+    const policyUnits = units.filter(u => u.slice(0, 56) === policy);
+    const assetMap = (C as any).Assets.new();
+    policyUnits.forEach(unit => {
+      assetMap.insert(
+        (C as any).AssetName.new(fromHex(unit.slice(56))),
+        C.BigNum.from_str(utxo.assets[unit].toString()),
+      );
+    });
+    multiAsset.insert((C as any).ScriptHash.from_bytes(fromHex(policy)), assetMap);
+  });
+
+  const value = C.Value.new(C.BigNum.from_str(lovelace ? lovelace.toString() : '0'));
+  if (units.length > 1 || !lovelace) value.set_multiasset(multiAsset);
+
+  const output = C.TransactionOutput.new(address, value);
+  if (utxo.datumHash) {
+    output.set_datum((C as any).Datum.new_data_hash(
+      (C as any).DataHash.from_bytes(fromHex(utxo.datumHash))
+    ));
+  } else if (utxo.datum) {
+    output.set_datum((C as any).Datum.new_data(
+      (C as any).Data.new(C.PlutusData.from_bytes(fromHex(utxo.datum)))
+    ));
+  }
+
+  return (C as any).TransactionUnspentOutput.new(
+    (C as any).TransactionInput.new(
+      (C as any).TransactionHash.from_bytes(fromHex(utxo.txHash)),
+      C.BigNum.from_str(utxo.outputIndex.toString()),
+    ),
+    output,
+  );
+}
+
+function findCollateral(walletUtxos: any): any | null {
+  for (let i = 0; i < walletUtxos.len(); i++) {
+    const u = walletUtxos.get(i);
+    if (!u.output().amount().multiasset()) return u;
+  }
+  return null;
+}
+
+// Build, sign, and submit a Plutus V3 spend transaction.
+//
+// Non-script tasks (addSigner, payTo, validTo) must be queued on txObj before calling.
+// collectFrom must NOT be queued — the script input is added here manually.
+//
+// Fee strategy:
+//   CML's PlutusWitness.new(PlutusData) carries no ExUnits, so balance() computes the
+//   fee for 0 ExUnits (F0).  After build_tx() we construct synthetic 2M-mem/1B-step
+//   redeemers and call the standalone min_fee(mockTx) to get the correct fee F1.
+//   We then rebuild the TransactionBody with F1 and the change output reduced by (F1-F0).
+//
+// Script injection:
+//   V3 scripts are set directly on TransactionWitnessSet — witnessSetBuilder has no
+//   add_plutus_v3_script() method and silently drops them via add_existing().
+async function completeV3Tx(
+  txObj: any,
+  scriptUtxo: UTxO,
+  redeemerHex: string,
+  lucid: Lucid,
+  compiledCode: string,
+): Promise<string> {
+  if (!_v3CostValues || !_linearFee || !_exUnitPrices) {
+    throw new Error('V3 cost models / fee params not initialised — call initLucid first');
+  }
+
+  let task = (txObj as any).tasks.shift();
+  while (task) {
+    await task(txObj as any);
+    task = (txObj as any).tasks.shift();
+  }
+
+  // Add the script input.  PlutusWitness.new(PlutusData) is what CML accepts; ExUnits
+  // will be 0 in the redeemers from build_tx(), which we fix up after balance().
+  const cmlScriptUtxo = utxoToCml(scriptUtxo);
+  const redeemerData = C.PlutusData.from_bytes(fromHex(redeemerHex));
+  txObj.txBuilder.add_input(
+    cmlScriptUtxo,
+    (C as any).ScriptWitness.new_plutus_witness(
+      C.PlutusWitness.new(redeemerData, undefined, undefined)
+    ),
+  );
+
+  // Collateral is required for any Plutus-spending transaction.
+  const walletUtxos = await lucid.wallet.getUtxosCore();
+  const collateral = findCollateral(walletUtxos);
+  if (!collateral) throw new Error('No pure-ADA UTxO available for collateral');
+  txObj.txBuilder.add_collateral(collateral);
+
+  const changeAddress = C.Address.from_bech32(await lucid.wallet.address());
+  txObj.txBuilder.add_inputs_from(walletUtxos, changeAddress, Uint32Array.from([200, 1000, 1500, 800, 800, 5000]));
+  txObj.txBuilder.balance(changeAddress, undefined);
+
+  // build_tx() produces the balanced tx.  Redeemers will have ExUnits = 0 because
+  // PlutusWitness.new(PlutusData) carries no ExUnits; the fee F0 was computed for 0 ExUnits.
+  const partialTx = txObj.txBuilder.build_tx();
+  const zeroRedeemers = partialTx.witness_set().redeemers();
+  if (!zeroRedeemers || zeroRedeemers.len() === 0) {
+    throw new Error('build_tx() produced no redeemers');
+  }
+
+  // Build synthetic redeemers with 2M mem / 1B steps to compute the correct fee.
+  const synthRedeemers = (C as any).Redeemers.new();
+  for (let i = 0; i < zeroRedeemers.len(); i++) {
+    const r = zeroRedeemers.get(i);
+    synthRedeemers.add((C as any).Redeemer.new(
+      r.tag(), r.index(), r.data(),
+      C.ExUnits.new(C.BigNum.from_str('2000000'), C.BigNum.from_str('1000000000')),
+    ));
+  }
+
+  // Prepare V3 script container (reused in wsets below).
+  // applyDoubleCborEncoding brings Aiken's Blueprint compiledCode into the encoding
+  // CML expects for PlutusScript.from_bytes() — same transform Lucid uses for V1/V2.
+  const plutusScript = C.PlutusScript.from_bytes(fromHex(applyDoubleCborEncoding(compiledCode)));
+  const v3Scripts = (C as any).PlutusScripts.new();
+  v3Scripts.add(plutusScript);
+
+  // Compute the correct fee via min_fee on a mock tx that carries synthetic redeemers.
+  const mockWset = C.TransactionWitnessSet.new();
+  mockWset.set_redeemers(synthRedeemers);
+  mockWset.set_plutus_v3_scripts(v3Scripts);
+  const mockTx = C.Transaction.new(partialTx.body(), mockWset, partialTx.auxiliary_data());
+  // min_fee on mockTx excludes vkey witnesses — add a 10,000 lovelace buffer
+  // (~44 lovelace/byte × ~102 bytes per signer × 2 signers + margin).
+  const F0 = BigInt(partialTx.body().fee().to_str());
+  const F1 = BigInt(((C as any).min_fee(mockTx, _linearFee, _exUnitPrices) as any).to_str()) + 10000n;
+  const finalFee = C.BigNum.from_str(F1.toString());
+  const feeDelta = F1 - F0;
+
+  // Rebuild the tx body: same inputs, fee = F1, last output (change) reduced by feeDelta.
+  const origOutputs = partialTx.body().outputs();
+  const numOut = origOutputs.len();
+  if (numOut === 0) throw new Error('build_tx() produced no outputs — cannot find change output');
+
+  const newOutputs = (C as any).TransactionOutputs.new();
+  for (let i = 0; i < numOut - 1; i++) {
+    const o = origOutputs.get(i);
+    newOutputs.add(C.TransactionOutput.from_bytes(o.to_bytes()));
+  }
+
+  const changeOut = origOutputs.get(numOut - 1);
+  const changeVal = changeOut.amount();
+  const newLovelace = BigInt(changeVal.coin().to_str()) - feeDelta;
+  if (newLovelace < 0n) throw new Error(`feeDelta (${feeDelta}) exceeds change output — wallet UTxO may be too small`);
+  const newChangeVal = C.Value.from_bytes(changeVal.to_bytes());
+  newChangeVal.set_coin(C.BigNum.from_str(newLovelace.toString()));
+  const newChangeOut = C.TransactionOutput.new(changeOut.address(), newChangeVal);
+  const changeDatum = changeOut.datum();
+  if (changeDatum) newChangeOut.set_datum(changeDatum);
+  newOutputs.add(newChangeOut);
+
+  const origBody = partialTx.body();
+  const newBody = C.TransactionBody.new(origBody.inputs(), newOutputs, finalFee, origBody.ttl());
+  const certs         = origBody.certs();           if (certs)           newBody.set_certs(certs);
+  const withdrawals   = origBody.withdrawals();     if (withdrawals)     newBody.set_withdrawals(withdrawals);
+  const validStart    = origBody.validity_start_interval(); if (validStart) newBody.set_validity_start_interval(validStart);
+  const mint          = origBody.mint();            if (mint)            newBody.set_mint(mint);
+  const collateralI   = origBody.collateral();      if (collateralI)     newBody.set_collateral(collateralI);
+  const reqSigners    = origBody.required_signers(); if (reqSigners)     newBody.set_required_signers(reqSigners);
+  const networkId     = origBody.network_id();      if (networkId)       newBody.set_network_id(networkId);
+  const colReturn     = origBody.collateral_return(); if (colReturn)     newBody.set_collateral_return(colReturn);
+  const totalCol      = origBody.total_collateral(); if (totalCol)       newBody.set_total_collateral(totalCol);
+  const refInputs     = origBody.reference_inputs(); if (refInputs)      newBody.set_reference_inputs(refInputs);
+
+  // script_data_hash: manual blake2b-256 of (redeemers || 0xA0 || v3_lang_views).
+  // CML's hash_script_data can't accept 350-entry V3 cost models, so we compute it ourselves.
+  const scriptDataHash = hashScriptDataV3(synthRedeemers, _v3CostValues!);
+  newBody.set_script_data_hash(scriptDataHash);
+
+  // Assemble unsigned tx with V3 script + synthetic redeemers baked into the wset.
+  const unsignedWset = C.TransactionWitnessSet.new();
+  unsignedWset.set_plutus_v3_scripts(v3Scripts);
+  unsignedWset.set_redeemers(synthRedeemers);
+
+  const txForSigning = C.Transaction.new(newBody, unsignedWset, partialTx.auxiliary_data());
+  const walletWset = await (lucid as any).wallet.signTx(txForSigning);
+
+  // Merge wallet vkeys — create a fresh wset so the V3 script is preserved.
+  const signedWset = C.TransactionWitnessSet.new();
+  signedWset.set_plutus_v3_scripts(v3Scripts);
+  signedWset.set_redeemers(synthRedeemers);
+  const vkeys = walletWset.vkeys();
+  if (vkeys) signedWset.set_vkeys(vkeys);
+
+  const signedTx = C.Transaction.new(newBody, signedWset, partialTx.auxiliary_data());
+  return await (lucid as any).provider.submitTx(toHex(signedTx.to_bytes()));
+}
 
 async function rentNft(
   nftAssetName: string,
@@ -274,18 +594,24 @@ async function rentNft(
   if (datum.renter !== null) {
     throw new Error(`"${nftAssetName}" already has a registered renter.`);
   }
+  if (datum.draw_date <= BigInt(Date.now())) {
+    throw new Error(`"${nftAssetName}" draw date has passed — this listing can no longer be rented.`);
+  }
 
   // 90% to owner, 10% to project; integer division matches the on-chain validator.
   const ownerShare   = datum.rental_fee * BigInt(90) / BigInt(100);
   const projectShare = datum.rental_fee - ownerShare;
-
   const updatedDatum: RentalDatum = { ...datum, renter: renterAddress };
 
-  const validToSlot = lucid.currentSlot() + 300; // ~5 min upper bound
+  // validTo must be strictly before draw_date (validator: tx_upper_bound < draw_date).
+  // Cap at 5 minutes or 60 seconds before the draw, whichever is sooner.
+  const fiveMin = Date.now() + 5 * 60 * 1000;
+  const drawMs  = Number(datum.draw_date);
+  const validTo = Math.min(fiveMin, drawMs - 60_000);
 
-  const txComplete = await lucid
+  // collectFrom is NOT queued — completeV3Tx adds the script input manually.
+  const txObj = lucid
     .newTx()
-    .collectFrom([rentalUtxo], buildRentRedeemer(renterAddress, lucid))
     .payToContract(
       contractAddress,
       { inline: encodeDatum(updatedDatum, lucid) },
@@ -297,22 +623,10 @@ async function rentNft(
     .payToAddress(datum.owner,          { lovelace: ownerShare })
     .payToAddress(datum.project_wallet, { lovelace: projectShare })
     .addSigner(renterAddress)
-    .validTo(validToSlot)
-    .complete();
+    .validTo(validTo);
 
-  // Inject the PlutusV3 script into the witness set.
-  // lucid-cardano 0.10.7 has no PlutusV3 support in TransactionBuilder — construct()
-  // throws "Missing required script" for V3 redeemers unless nativeUplc:false skips
-  // that validation. The script is then added directly via the CML WitnessSet API.
-  const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
-  const scripts = (C as any).PlutusScripts.new();
-  scripts.add(plutusScript);
-  const v3Witness = C.TransactionWitnessSet.new();
-  v3Witness.set_plutus_v3_scripts(scripts);
-  (txComplete as any).witnessSetBuilder.add_existing(v3Witness);
-
-  const signed = await txComplete.sign().complete();
-  const txHash = await signed.submit();
+  const redeemerHex = buildRentRedeemer(renterAddress, lucid);
+  const txHash = await completeV3Tx(txObj, rentalUtxo, redeemerHex, lucid, compiledCode);
 
   return {
     success: true,
@@ -329,27 +643,17 @@ async function cancelListingNft(
 ): Promise<InteractionResult> {
   const { contractAddress, compiledCode } = validator;
   const listingUtxo = await fetchRentalUtxo(nftAssetName, contractAddress, lucid);
-  const datum = decodeDatum(listingUtxo, lucid);
 
+  const datum = decodeDatum(listingUtxo, lucid);
   if (datum.renter !== null) {
-    throw new Error(`"${nftAssetName}" already has a registered renter — cannot cancel.`);
+    throw new Error(`Cannot cancel "${nftAssetName}" — a renter is already registered.`);
   }
 
-  const txComplete = await lucid
-    .newTx()
-    .collectFrom([listingUtxo], Data.to(new Constr(0, [])))
-    .addSigner(ownerAddress)
-    .complete();
+  // collectFrom is NOT queued — completeV3Tx adds the script input manually.
+  const txObj = lucid.newTx().addSigner(ownerAddress);
 
-  const plutusScript = C.PlutusScript.from_bytes(fromHex(compiledCode));
-  const scripts = (C as any).PlutusScripts.new();
-  scripts.add(plutusScript);
-  const v3Witness = C.TransactionWitnessSet.new();
-  v3Witness.set_plutus_v3_scripts(scripts);
-  (txComplete as any).witnessSetBuilder.add_existing(v3Witness);
-
-  const signed = await txComplete.sign().complete();
-  const txHash = await signed.submit();
+  const redeemerHex = Data.to(new Constr(0, []));
+  const txHash = await completeV3Tx(txObj, listingUtxo, redeemerHex, lucid, compiledCode);
 
   return {
     success: true,
@@ -558,7 +862,8 @@ export default function DonadaPlatform() {
         if (!u.datum) return [];
         try {
           const datum = decodeDatum(u, lucid);
-          if (datum.renter !== null) return []; // already rented
+          if (datum.renter !== null) return [];                      // already rented
+          if (datum.draw_date <= BigInt(Date.now())) return [];      // draw date passed
           return [{
             policyId: datum.nft_policy,
             assetName: datum.nft_asset_name,
