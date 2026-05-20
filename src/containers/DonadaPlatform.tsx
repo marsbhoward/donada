@@ -674,6 +674,43 @@ async function claimBackExpiredRentals(
   return hashes;
 }
 
+// Queries Blockfrost for all wallets holding any NFT under DONADA_POLICY_ID,
+// excluding the contract address (those are already counted as rental UTxOs).
+async function fetchLiveNftHolders(
+  blockfrostBase: string,
+  blockfrostKey: string,
+  excludeAddresses: Set<string>,
+): Promise<Array<{ address: string; assetId: string }>> {
+  const bf = async <T,>(path: string): Promise<T> => {
+    const res = await fetch(`${blockfrostBase}${path}`, { headers: { project_id: blockfrostKey } });
+    if (!res.ok) throw new Error(`Blockfrost ${path} → ${res.status}`);
+    return res.json() as Promise<T>;
+  };
+
+  // Collect all assets under the policy (paginated, 100/page)
+  let assets: Array<{ asset: string }> = [];
+  for (let page = 1; ; page++) {
+    const page_data = await bf<Array<{ asset: string }>>(`/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`);
+    assets = assets.concat(page_data);
+    if (page_data.length < 100) break;
+  }
+
+  const holders: Array<{ address: string; assetId: string }> = [];
+  for (const { asset } of assets) {
+    const assetId = toText(asset.slice(56));
+    let addresses: Array<{ address: string }> = [];
+    for (let page = 1; ; page++) {
+      const page_data = await bf<Array<{ address: string }>>(`/assets/${asset}/addresses?page=${page}&count=100`);
+      addresses = addresses.concat(page_data);
+      if (page_data.length < 100) break;
+    }
+    for (const { address } of addresses) {
+      if (!excludeAddresses.has(address)) holders.push({ address, assetId });
+    }
+  }
+  return holders;
+}
+
 async function cancelListingNft(
   nftAssetName: string,
   ownerAddress: string,
@@ -766,6 +803,11 @@ export default function DonadaPlatform() {
   const [isClaimingBack, setIsClaimingBack] = useState(false);
   const [claimBackLog, setClaimBackLog] = useState<string[]>([]);
   const [claimBackError, setClaimBackError] = useState<string | null>(null);
+
+  // Admin holder sync
+  const [isSyncingHolders, setIsSyncingHolders] = useState(false);
+  const [holderPreview, setHolderPreview] = useState<string | null>(null);
+  const [holderSyncError, setHolderSyncError] = useState<string | null>(null);
 
   // Invalidate validator cache whenever the network changes so the address is re-derived
   useEffect(() => { _validatorCache = null; }, [network]);
@@ -1088,22 +1130,14 @@ export default function DonadaPlatform() {
         } catch { return []; }
       });
 
-      // ── Source 2: NFT holders not in rental (address + asset_id columns) ─────
-      // Format: address,asset_id — one row per NFT so the same address with
-      // multiple NFTs gets a separate ticket for each.
-      const parseNftHoldersCsv = async (): Promise<Array<{ address: string; assetId: string }>> => {
-        try {
-          const res = await fetch('/data/nft_holders.csv');
-          if (!res.ok) return [];
-          const text = await res.text();
-          const seen = new Set<string>();
-          return text.trim().split('\n')
-            .slice(1)
-            .map(l => { const [address, assetId] = l.split(',').map(s => s.trim().replace(/^"|"$/g, '')); return { address, assetId }; })
-            .filter(r => r.address && r.assetId)
-            .filter(r => { const key = `${r.address}:${r.assetId}`; if (seen.has(key)) return false; seen.add(key); return true; });
-        } catch { return []; }
-      };
+      // ── Source 2: live on-chain NFT holders (Blockfrost policy query) ──────────
+      // Excludes the contract address (counted as rental) and project wallet.
+      log('Fetching live NFT holders from chain…');
+      const nftHolderRows = await fetchLiveNftHolders(
+        blockfrostBase,
+        blockfrostKey,
+        new Set([contractAddress, PROJECT_WALLET_ADDRESS]),
+      );
 
       // ── Source 3: wallet participants (address only, no asset_id) ─────────────
       const parseWalletCsv = async (): Promise<string[]> => {
@@ -1120,10 +1154,7 @@ export default function DonadaPlatform() {
         } catch { return []; }
       };
 
-      const [nftHolderRows, walletAddresses] = await Promise.all([
-        parseNftHoldersCsv(),
-        parseWalletCsv(),
-      ]);
+      const walletAddresses = await parseWalletCsv();
 
       const nftHolderParticipants: DrawParticipant[] = nftHolderRows.map(
         r => ({ source: 'nft_holder' as const, address: r.address, assetId: r.assetId })
@@ -1273,6 +1304,29 @@ export default function DonadaPlatform() {
       setClaimBackError(msg);
     } finally {
       setIsClaimingBack(false);
+    }
+  };
+
+  // ----- Admin: preview live NFT holders from Blockfrost -----
+  const handleSyncHolders = async () => {
+    setIsSyncingHolders(true);
+    setHolderPreview(null);
+    setHolderSyncError(null);
+    try {
+      const lucid = await initLucid(network);
+      const { contractAddress } = await loadRentalValidator(lucid);
+      const { url: blockfrostBase, apiKey: blockfrostKey } = blockfrostConfig(network);
+      const holders = await fetchLiveNftHolders(
+        blockfrostBase,
+        blockfrostKey,
+        new Set([contractAddress, PROJECT_WALLET_ADDRESS]),
+      );
+      const uniqueAddresses = new Set(holders.map(h => h.address)).size;
+      setHolderPreview(`${holders.length} ticket(s) across ${uniqueAddresses} wallet(s)`);
+    } catch (err) {
+      setHolderSyncError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSyncingHolders(false);
     }
   };
 
@@ -1483,6 +1537,27 @@ export default function DonadaPlatform() {
           {drawError && (
             <p style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
               Error: {drawError}
+            </p>
+          )}
+
+          <hr className="section-break" style={{ margin: '1rem 0' }} />
+
+          <div className="action-block">
+            <div className="action-text">Preview NFT Holders (live)</div>
+            <button
+              className="select-btn small"
+              disabled={isSyncingHolders}
+              onClick={handleSyncHolders}
+            >
+              {isSyncingHolders ? 'Fetching…' : 'Sync'}
+            </button>
+          </div>
+          {holderPreview && (
+            <p style={{ fontSize: '0.75rem', marginTop: '0.25rem' }}>{holderPreview}</p>
+          )}
+          {holderSyncError && (
+            <p style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
+              Error: {holderSyncError}
             </p>
           )}
 
