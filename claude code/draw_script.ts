@@ -461,6 +461,22 @@ async function blockfrostGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ── Tx confirmation helper ────────────────────────────────────────────────────
+
+async function waitForTxConfirmed(txHash: string, maxWaitMs = 120_000): Promise<void> {
+  const deadline = Date.now() + maxWaitMs;
+  console.log(`Waiting for payout tx ${txHash.slice(0, 12)}… to be confirmed...`);
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 15_000));
+    try {
+      await blockfrostGet(`/txs/${txHash}`);
+      console.log('Payout tx confirmed.');
+      return;
+    } catch { /* not yet indexed */ }
+  }
+  console.warn(`Payout tx not confirmed within ${maxWaitMs / 1000}s — proceeding with ClaimBack`);
+}
+
 // ── ClaimBack helpers ─────────────────────────────────────────────────────────
 
 function loadCompiledCode(): string {
@@ -490,10 +506,14 @@ async function claimBackRentalUtxos(
       console.log(`  ${datum.nft_asset_name} → ${datum.owner.slice(0, 24)}…`);
 
       // ClaimBack redeemer = Constr(2, []) (index 2 in RentalRedeemer enum).
-      // collectFrom is NOT queued — completeV3Tx adds the script input manually.
+      // collectFrom + attachSpendingValidator register the script input with lucid's
+      // txBuilder so it appears in body.inputs. completeV3Tx then injects the V3
+      // witness set and corrects the fee/script_data_hash manually.
       const redeemerHex = Data.to(new Constr(2, []));
       const txObj = lucid
         .newTx()
+        .collectFrom([utxo], redeemerHex)
+        .attachSpendingValidator({ type: 'PlutusV2', script: applyDoubleCborEncoding(compiledCode) })
         .payToAddress(datum.owner, utxo.assets)
         .addSigner(PROJECT_WALLET_ADDRESS)
         .validFrom(Number(datum.draw_date) + 1000);
@@ -638,6 +658,10 @@ async function main() {
   // Mark this draw as complete in the CSV before ClaimBack — prevents
   // double payout if the cron fires again before the next draw is added.
   markDrawComplete(scheduled.date);
+
+  // Wait for the payout tx to be confirmed so the wallet UTXO set is fresh
+  // before ClaimBack tries to select collateral and fee inputs.
+  await waitForTxConfirmed(txHash);
 
   // Step 8 — Return each rented NFT to its owner (10 min after draw_date)
   const compiledCode    = loadCompiledCode();
