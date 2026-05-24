@@ -7,7 +7,8 @@ import { Lucid, Blockfrost, fromText, toText, Data, Constr, UTxO, C, fromHex, to
 
 // ── Contract constants ────────────────────────────────────────────────────────
 
-const DONADA_POLICY_ID   = '21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a';
+// Legacy policy ID (DonodaNFT001–003): 21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a
+const DONADA_POLICY_ID   = '6c8b99e48576746aa1efa39cc952b3a66dfb76a9fcf82aaca5a1ab5c';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
 const POLICY_IDS         = [DONADA_POLICY_ID, PARTNER_POLICY_ID].filter(Boolean) as string[];
 const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
@@ -921,9 +922,9 @@ export default function DonadaPlatform() {
       setLoadingOwnedNfts(true);
       const assets = await connectedWallet.wallet.getAssets();
       const filtered = assets.filter((a: NftAsset) => POLICY_IDS.includes(a.policyId));
-      const enriched: NftAsset[] = await Promise.all(
+      const enriched = (await Promise.all(
         filtered.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName))
-      );
+      )).filter((r: any) => !r.error) as NftAsset[];
       setOwnedNfts(enriched);
       setRentMode(false);
       setShowRentModal(true);
@@ -982,7 +983,8 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lucid.selectWallet(connectedWallet.api as any);
 
       const { contractAddress } = await loadRentalValidator(lucid);
       const txHash = await submitListing(
@@ -1014,7 +1016,8 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lucid.selectWallet(connectedWallet.api as any);
 
       const validator = await loadRentalValidator(lucid);
       const result = await rentNft(nft.assetName, fullWalletAddress, validator, lucid);
@@ -1035,7 +1038,8 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lucid.selectWallet(connectedWallet.api as any);
       const { contractAddress } = await loadRentalValidator(lucid);
       const utxos = await lucid.utxosAt(contractAddress);
       const owned = utxos.flatMap(u => {
@@ -1064,7 +1068,8 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lucid.selectWallet(connectedWallet.api as any);
       const validator = await loadRentalValidator(lucid);
       const result = await cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
       setCancelTxHash(result.txHash);
@@ -1105,7 +1110,8 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      lucid.selectWallet(connectedWallet.api as any);
 
       const { contractAddress } = await loadRentalValidator(lucid);
 
@@ -1132,6 +1138,7 @@ export default function DonadaPlatform() {
 
       // ── Source 2: live on-chain NFT holders (Blockfrost policy query) ──────────
       // Excludes the contract address (counted as rental) and project wallet.
+      const { url: blockfrostBase, apiKey: blockfrostKey } = blockfrostConfig(network);
       log('Fetching live NFT holders from chain…');
       const nftHolderRows = await fetchLiveNftHolders(
         blockfrostBase,
@@ -1183,7 +1190,6 @@ export default function DonadaPlatform() {
       // draw timestamp. Because the draw can only execute after the countdown
       // expires, and the block is determined by the chain (not the admin), the
       // winner cannot be influenced by choosing when to press the button.
-      const { url: blockfrostBase, apiKey: blockfrostKey } = blockfrostConfig(network);
 
       if (!scheduledDrawDate) throw new Error('No scheduled draw date found — update drawDates.csv.');
 
@@ -1591,19 +1597,19 @@ export default function DonadaPlatform() {
       <RentModal
         isOpen={showRentModal}
         mode={rentMode ? 'rent' : 'list'}
-        nfts={rentMode ? listedNfts : ownedNfts}
+        nfts={(rentMode ? listedNfts : ownedNfts) as any}
         onClose={closeModal}
         onConfirm={rentMode ? handleRentNft : handleCreateListing}
-        nextDrawDate={nextDrawDate}
+        nextDrawDate={nextDrawDate as any}
       />
 
       <RentModal
         isOpen={showCancelModal}
         mode="cancel"
-        nfts={cancelNfts}
+        nfts={cancelNfts as any}
         onClose={() => setShowCancelModal(false)}
         onConfirm={handleCancelNft}
-        nextDrawDate={nextDrawDate}
+        nextDrawDate={nextDrawDate as any}
       />
     </div>
   );
