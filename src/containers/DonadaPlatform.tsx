@@ -636,6 +636,24 @@ async function rentNft(
   };
 }
 
+// Polls Blockfrost until a submitted tx appears on-chain (max ~5 min).
+async function waitForTxOnChain(
+  txHash: string,
+  blockfrostBase: string,
+  blockfrostKey: string,
+  onProgress: (msg: string) => void,
+): Promise<void> {
+  onProgress(`Waiting for ${txHash.slice(0, 12)}… to confirm on-chain…`);
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await new Promise<void>(r => setTimeout(r, 5000));
+    const res = await fetch(`${blockfrostBase}/txs/${txHash}`, {
+      headers: { project_id: blockfrostKey },
+    });
+    if (res.ok) { onProgress('Confirmed.'); return; }
+  }
+  throw new Error(`Tx ${txHash} not confirmed after 5 minutes.`);
+}
+
 async function claimBackExpiredRentals(
   projectWalletAddress: string,
   validator: ValidatorSetup,
@@ -656,7 +674,14 @@ async function claimBackExpiredRentals(
   onProgress(`Found ${expired.length} expired rental UTxO(s).`);
   const hashes: string[] = [];
 
-  for (const utxo of expired) {
+  // Pull blockfrost params from lucid's provider so we can poll for confirmation
+  // between sequential claimbacks — prevents stale UTxO conflicts on the wallet.
+  const provider = (lucid as any).provider;
+  const bfBase = provider?.url ?? '';
+  const bfKey  = provider?.projectId ?? '';
+
+  for (let idx = 0; idx < expired.length; idx++) {
+    const utxo = expired[idx];
     const datum = decodeDatum(utxo, lucid);
     onProgress(`Claiming back ${datum.nft_asset_name}…`);
 
@@ -670,6 +695,11 @@ async function claimBackExpiredRentals(
     const txHash = await completeV3Tx(txObj, utxo, redeemerHex, lucid, compiledCode);
     onProgress(`Done: ${txHash.slice(0, 12)}…`);
     hashes.push(txHash);
+
+    // Wait for each claimback to confirm before spending wallet UTxOs for the next one
+    if (idx < expired.length - 1) {
+      await waitForTxOnChain(txHash, bfBase, bfKey, onProgress);
+    }
   }
 
   return hashes;
@@ -1379,8 +1409,28 @@ export default function DonadaPlatform() {
       const signed = await built.sign().complete();
       const txHash = await signed.submit();
 
-      log(`Done! Tx: ${txHash}`);
+      log(`Done! Payout tx: ${txHash}`);
       setDrawTxHash(txHash);
+
+      // Automatically return NFTs to owners for all expired rental UTxOs,
+      // regardless of whether they had an active renter.
+      log('Waiting for payout to confirm before returning NFTs…');
+      await waitForTxOnChain(txHash, blockfrostBase, blockfrostKey, log);
+      log('Claiming back expired rental NFTs to owners…');
+      try {
+        const claimValidator = await loadRentalValidator(lucid);
+        const claimedHashes = await claimBackExpiredRentals(
+          fullWalletAddress,
+          claimValidator,
+          lucid,
+          msg => setDrawLog(prev => [...prev, msg]),
+        );
+        log(`Returned ${claimedHashes.length} NFT(s) to owner(s).`);
+      } catch (cbErr) {
+        const cbMsg = cbErr instanceof Error ? cbErr.message : String(cbErr);
+        // "No expired UTxOs" just means no rentals were active this cycle
+        if (!cbMsg.includes('No expired')) log(`Claim-back note: ${cbMsg}`);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Draw failed:', err);
