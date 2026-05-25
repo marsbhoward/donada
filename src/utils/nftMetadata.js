@@ -1,7 +1,9 @@
 // File: src/utils/nftMetadata.js
 
-const BLOCKFROST_BASE = 'https://cardano-mainnet.blockfrost.io/api/v0';
-const API_KEY = process.env.REACT_APP_BlockFrost_API_KEY;
+const BLOCKFROST_URLS = {
+  Mainnet: 'https://cardano-mainnet.blockfrost.io/api/v0',
+  Preview: 'https://cardano-preview.blockfrost.io/api/v0',
+};
 
 // --- UTF-8 <-> HEX helpers (Cardano asset names) ---
 export function utf8ToHex(str) {
@@ -17,15 +19,20 @@ export function hexToUtf8(hex) {
 }
 
 // --- Fetch NFT metadata from Blockfrost ---
-export async function fetchNftMetadata(policyId, assetName) {
+export async function fetchNftMetadata(policyId, assetName, network = 'Preview') {
+  const base   = BLOCKFROST_URLS[network] ?? BLOCKFROST_URLS.Preview;
+  const apiKey = network === 'Mainnet'
+    ? process.env.REACT_APP_BlockFrost_API_KEY_Mainnet
+    : process.env.REACT_APP_BlockFrost_API_KEY_Preview;
+
   try {
     // Convert UTF-8 asset name to hex (Cardano format)
     const assetNameHex = utf8ToHex(assetName);
     const assetId = `${policyId}${assetNameHex}`;
 
-    const res = await fetch(`${BLOCKFROST_BASE}/assets/${assetId}`, {
+    const res = await fetch(`${base}/assets/${assetId}`, {
       headers: {
-        project_id: API_KEY
+        project_id: apiKey
       }
     });
 

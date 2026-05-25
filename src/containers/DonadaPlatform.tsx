@@ -739,6 +739,95 @@ async function cancelListingNft(
   };
 }
 
+// ── Conway tag-258 CBOR stripper ─────────────────────────────────────────────
+//
+// Conway-era wallets (e.g. Eternl) encode Vkeywitnesses as a CBOR *set*
+// (tag 258 prefix before the array) instead of a plain CBOR array.
+// CML 0.10.7 calls Vkeywitnesses.from_bytes() expecting an array byte but
+// receives the tag byte and throws "expected 'Array' byte received 'Tag'".
+// Walk the CBOR tree and remove every occurrence of tag 258; all other
+// bytes (including Plutus Constr tags 121-122, byte strings, etc.) are
+// copied verbatim.
+function stripCborTag258(bytes: Uint8Array): Uint8Array {
+  const out: number[] = [];
+  let i = 0;
+
+  function copyN(n: number): void {
+    for (let j = 0; j < n; j++) out.push(bytes[i++]);
+  }
+
+  function readLen(info: number, push: boolean): number {
+    if (info <= 23) return info;
+    if (info === 24) { if (push) out.push(bytes[i]); return bytes[i++]; }
+    if (info === 25) {
+      const v = (bytes[i] << 8) | bytes[i + 1];
+      if (push) { out.push(bytes[i]); out.push(bytes[i + 1]); }
+      i += 2; return v;
+    }
+    if (info === 26) {
+      const v = ((bytes[i] << 24) | (bytes[i+1] << 16) | (bytes[i+2] << 8) | bytes[i+3]) >>> 0;
+      if (push) copyN(4);
+      else i += 4;
+      return v;
+    }
+    throw new Error(`CBOR additional info ${info} not supported in stripCborTag258`);
+  }
+
+  function walk(): void {
+    if (i >= bytes.length) return;
+    const b = bytes[i];
+    const major = b >> 5;
+    const info  = b & 0x1F;
+
+    if (major === 6) {
+      i++; // consume tag byte without emitting
+      const tagVal = readLen(info, false);
+      if (tagVal !== 258) {
+        // Re-emit the tag header bytes
+        if      (info <= 23) out.push(0xC0 | info);
+        else if (info === 24) { out.push(0xD8); out.push(tagVal); }
+        else if (info === 25) { out.push(0xD9); out.push((tagVal >> 8) & 0xFF); out.push(tagVal & 0xFF); }
+      }
+      walk();
+      return;
+    }
+
+    out.push(b); i++;
+    switch (major) {
+      case 0: case 1:
+        if (info === 24) copyN(1);
+        else if (info === 25) copyN(2);
+        else if (info === 26) copyN(4);
+        else if (info === 27) copyN(8);
+        break;
+      case 2: case 3: { const len = readLen(info, true); copyN(len); break; }
+      case 4: { const n = readLen(info, true); for (let j = 0; j < n; j++) walk(); break; }
+      case 5: { const n = readLen(info, true); for (let j = 0; j < n * 2; j++) walk(); break; }
+      case 7:
+        if (info === 24) copyN(1);
+        else if (info === 25) copyN(2);
+        else if (info === 26) copyN(4);
+        else if (info === 27) copyN(8);
+        break;
+    }
+  }
+
+  walk();
+  return new Uint8Array(out);
+}
+
+// Selects a CIP-30 wallet and patches lucid.wallet.signTx so that the tag-258
+// wrapper is stripped from the returned witness set before CML parses it.
+function selectAndPatchWallet(lucid: Lucid, cip30Api: unknown): void {
+  lucid.selectWallet(cip30Api as any);
+  const rawSign = (cip30Api as any).signTx.bind(cip30Api);
+  (lucid as any).wallet.signTx = async (tx: any, partialSign?: boolean) => {
+    const rawHex = await rawSign(toHex(tx.to_bytes()), partialSign ?? false);
+    const stripped = stripCborTag258(fromHex(rawHex));
+    return C.TransactionWitnessSet.from_bytes(stripped);
+  };
+}
+
 // ── Wallet detection ──────────────────────────────────────────────────────────
 
 function getAvailableWallets(): WalletInfo[] {
@@ -923,8 +1012,12 @@ export default function DonadaPlatform() {
       const assets = await connectedWallet.wallet.getAssets();
       const filtered = assets.filter((a: NftAsset) => POLICY_IDS.includes(a.policyId));
       const enriched = (await Promise.all(
-        filtered.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName))
-      )).filter((r: any) => !r.error) as NftAsset[];
+        filtered.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName, network))
+      )).map((r: any) =>
+        r.error
+          ? { policyId: r.policyId, assetName: r.assetName, name: r.assetName } as NftAsset
+          : r as NftAsset
+      );
       setOwnedNfts(enriched);
       setRentMode(false);
       setShowRentModal(true);
@@ -984,7 +1077,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api as any);
+      selectAndPatchWallet(lucid, connectedWallet.api);
 
       const { contractAddress } = await loadRentalValidator(lucid);
       const txHash = await submitListing(
@@ -1017,7 +1110,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api as any);
+      selectAndPatchWallet(lucid, connectedWallet.api);
 
       const validator = await loadRentalValidator(lucid);
       const result = await rentNft(nft.assetName, fullWalletAddress, validator, lucid);
@@ -1039,7 +1132,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api as any);
+      selectAndPatchWallet(lucid, connectedWallet.api);
       const { contractAddress } = await loadRentalValidator(lucid);
       const utxos = await lucid.utxosAt(contractAddress);
       const owned = utxos.flatMap(u => {
@@ -1069,7 +1162,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api as any);
+      selectAndPatchWallet(lucid, connectedWallet.api);
       const validator = await loadRentalValidator(lucid);
       const result = await cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
       setCancelTxHash(result.txHash);
@@ -1111,7 +1204,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api as any);
+      selectAndPatchWallet(lucid, connectedWallet.api);
 
       const { contractAddress } = await loadRentalValidator(lucid);
 
@@ -1296,7 +1389,7 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      lucid.selectWallet(connectedWallet.api as any);
+      selectAndPatchWallet(lucid, connectedWallet.api);
       const validator = await loadRentalValidator(lucid);
       await claimBackExpiredRentals(
         fullWalletAddress,
