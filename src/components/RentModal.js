@@ -75,10 +75,22 @@ export default function RentModal({
                 className={`carousel-frame ${position}`}
                 onClick={() => setActiveIndex(index)}
               >
-                <img
-                  src={nft.image}
-                  alt={nft.name || nft.assetName}
-                />
+                {nft.image ? (
+                  <img
+                    src={nft.image}
+                    alt={nft.name || nft.assetName}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  <div style={{
+                    width: '100%', height: '100%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '0.7rem', textAlign: 'center', padding: '0.25rem',
+                    opacity: 0.6,
+                  }}>
+                    {nft.name || nft.assetName}
+                  </div>
+                )}
                 {position !== 'active' && (
                   <div className="carousel-dim" />
                 )}

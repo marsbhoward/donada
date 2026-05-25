@@ -821,8 +821,10 @@ function stripCborTag258(bytes: Uint8Array): Uint8Array {
 function selectAndPatchWallet(lucid: Lucid, cip30Api: unknown): void {
   lucid.selectWallet(cip30Api as any);
   const rawSign = (cip30Api as any).signTx.bind(cip30Api);
-  (lucid as any).wallet.signTx = async (tx: any, partialSign?: boolean) => {
-    const rawHex = await rawSign(toHex(tx.to_bytes()), partialSign ?? false);
+  (lucid as any).wallet.signTx = async (tx: any, _partialSign?: boolean) => {
+    // Always partialSign=true: script inputs in spending txs are not owned by
+    // the wallet, so passing false causes "wallet does not have the secret key".
+    const rawHex = await rawSign(toHex(tx.to_bytes()), true);
     const stripped = stripCborTag258(fromHex(rawHex));
     return C.TransactionWitnessSet.from_bytes(stripped);
   };
@@ -1055,7 +1057,15 @@ export default function DonadaPlatform() {
         }
       });
 
-      setListedNfts(available);
+      const enriched = await Promise.all(
+        available.map(async (a: NftAsset) => {
+          const meta = await fetchNftMetadata(a.policyId, a.assetName, network);
+          return (meta as any).error
+            ? a
+            : { ...a, image: (meta as any).image ?? undefined, name: (meta as any).name ?? a.name } as NftAsset;
+        })
+      );
+      setListedNfts(enriched);
       setRentMode(true);
       setShowRentModal(true);
     } catch (err) {
