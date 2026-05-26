@@ -1596,13 +1596,9 @@ export default function DonadaPlatform() {
         <div className="nft-card">
           <div className="nft-image">
             <div className={`nft-image-inner${featuredNftImage ? ' has-image' : ''}`}>
-              {featuredNftImage ? (
-                <div className="nft-mat">
-                  <img src={featuredNftImage} alt={COLLECTION_NAME} />
-                </div>
-              ) : (
-                'NFT IMAGE'
-              )}
+              {featuredNftImage
+                ? <img src={featuredNftImage} alt={COLLECTION_NAME} />
+                : 'NFT IMAGE'}
             </div>
             <div className="nft-details">
               <p className="mint-name">Collection: {COLLECTION_NAME}</p>
