@@ -931,8 +931,49 @@ export default function DonadaPlatform() {
   const [holderPreview, setHolderPreview] = useState<string | null>(null);
   const [holderSyncError, setHolderSyncError] = useState<string | null>(null);
 
+  // On-chain NFT stats (total supply + open rental listings)
+  const [nftStats, setNftStats] = useState<{ total: number; openRentals: number } | null>(null);
+
   // Invalidate validator cache whenever the network changes so the address is re-derived
   useEffect(() => { _validatorCache = null; }, [network]);
+
+  // ----- Fetch on-chain NFT stats -----
+  useEffect(() => {
+    let cancelled = false;
+    const fetchStats = async () => {
+      try {
+        const { url: bfBase, apiKey: bfKey } = blockfrostConfig(network);
+
+        // Total NFTs minted under the policy (paginated)
+        let total = 0;
+        for (let page = 1; ; page++) {
+          const res = await fetch(
+            `${bfBase}/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`,
+            { headers: { project_id: bfKey } },
+          );
+          if (!res.ok) break;
+          const data: Array<{ asset: string }> = await res.json();
+          total += data.length;
+          if (data.length < 100) break;
+        }
+
+        // Open rental listings at the contract (no renter registered yet)
+        const lucid = await initLucid(network);
+        const { contractAddress } = await loadRentalValidator(lucid);
+        const utxos = await lucid.utxosAt(contractAddress);
+        const openRentals = utxos.filter(u => {
+          try { return decodeDatum(u, lucid).renter === null; }
+          catch { return false; }
+        }).length;
+
+        if (!cancelled) setNftStats({ total, openRentals });
+      } catch (err) {
+        console.error('Failed to fetch NFT stats:', err);
+      }
+    };
+    fetchStats();
+    return () => { cancelled = true; };
+  }, [network]);
 
   // ----- Load next draw date from CSV -----
   useEffect(() => {
@@ -1531,10 +1572,16 @@ export default function DonadaPlatform() {
           <div className="nft-image">
             <div className="nft-image-inner">NFT IMAGE</div>
             <div className="nft-details">
-              <p className="mint-name">Mint Name</p>
-              <p className="policy-id">Policy ID</p>
-              <p className="meta">lot x NFTs</p>
-              <p className="meta">lot x entries</p>
+              <p className="mint-name">DONADA Test NFTs</p>
+              <p className="policy-id" title={DONADA_POLICY_ID}>
+                {DONADA_POLICY_ID.slice(0, 8)}…{DONADA_POLICY_ID.slice(-6)}
+              </p>
+              <p className="meta">
+                lot {nftStats != null ? nftStats.total : '—'} NFTs
+              </p>
+              <p className="meta">
+                lot {nftStats != null ? nftStats.openRentals : '—'} entries
+              </p>
             </div>
           </div>
 
