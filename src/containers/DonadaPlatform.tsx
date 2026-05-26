@@ -9,6 +9,11 @@ import { Lucid, Blockfrost, fromText, toText, Data, Constr, UTxO, C, fromHex, to
 
 // Legacy policy ID (DonodaNFT001–003): 21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a
 const DONADA_POLICY_ID   = '6c8b99e48576746aa1efa39cc952b3a66dfb76a9fcf82aaca5a1ab5c';
+
+// Collection name — hardcoded for now. Future: fetch first asset under the policy
+// via Blockfrost, read onchain_metadata.name, strip trailing token-number suffix
+// (e.g. "DONADA Test 000" → "DONADA Test") to derive the name dynamically.
+const COLLECTION_NAME    = 'DONADA Test';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
 const POLICY_IDS         = [DONADA_POLICY_ID, PARTNER_POLICY_ID].filter(Boolean) as string[];
 const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
@@ -1572,15 +1577,15 @@ export default function DonadaPlatform() {
           <div className="nft-image">
             <div className="nft-image-inner">NFT IMAGE</div>
             <div className="nft-details">
-              <p className="mint-name">DONADA Test NFTs</p>
+              <p className="mint-name">Collection: {COLLECTION_NAME}</p>
               <p className="policy-id" title={DONADA_POLICY_ID}>
-                {DONADA_POLICY_ID.slice(0, 8)}…{DONADA_POLICY_ID.slice(-6)}
+                Policy ID: {DONADA_POLICY_ID.slice(0, 10)}…{DONADA_POLICY_ID.slice(-8)}
               </p>
               <p className="meta">
-                lot {nftStats != null ? nftStats.total : '—'} NFTs
+                TOTAL # of NFTS: {nftStats != null ? nftStats.total : '—'}
               </p>
               <p className="meta">
-                lot {nftStats != null ? nftStats.openRentals : '—'} entries
+                # of available rentals: {nftStats != null ? nftStats.openRentals : '—'}
               </p>
             </div>
           </div>
