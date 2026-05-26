@@ -938,6 +938,8 @@ export default function DonadaPlatform() {
 
   // On-chain NFT stats (total supply + open rental listings)
   const [nftStats, setNftStats] = useState<{ total: number; openRentals: number } | null>(null);
+  // Featured image — first NFT under the policy, loaded from on-chain metadata
+  const [featuredNftImage, setFeaturedNftImage] = useState<string | null>(null);
 
   // Invalidate validator cache whenever the network changes so the address is re-derived
   useEffect(() => { _validatorCache = null; }, [network]);
@@ -949,8 +951,9 @@ export default function DonadaPlatform() {
       try {
         const { url: bfBase, apiKey: bfKey } = blockfrostConfig(network);
 
-        // Total NFTs minted under the policy (paginated)
+        // Total NFTs minted under the policy (paginated); capture first asset for image
         let total = 0;
+        let firstAsset: string | null = null;
         for (let page = 1; ; page++) {
           const res = await fetch(
             `${bfBase}/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`,
@@ -958,8 +961,25 @@ export default function DonadaPlatform() {
           );
           if (!res.ok) break;
           const data: Array<{ asset: string }> = await res.json();
+          if (page === 1 && data.length > 0) firstAsset = data[0].asset;
           total += data.length;
           if (data.length < 100) break;
+        }
+
+        // Featured image: fetch first asset's on-chain CIP-25 metadata
+        if (firstAsset && !cancelled) {
+          const assetRes = await fetch(`${bfBase}/assets/${firstAsset}`, {
+            headers: { project_id: bfKey },
+          });
+          if (assetRes.ok) {
+            const assetData = await assetRes.json();
+            const rawImage = assetData.onchain_metadata?.image;
+            if (rawImage) {
+              const flat = Array.isArray(rawImage) ? rawImage.join('') : String(rawImage);
+              const url  = flat.replace('ipfs://', 'https://ipfs.io/ipfs/');
+              if (!cancelled) setFeaturedNftImage(url);
+            }
+          }
         }
 
         // Open rental listings at the contract (no renter registered yet)
@@ -1575,7 +1595,15 @@ export default function DonadaPlatform() {
       <main className="main-content">
         <div className="nft-card">
           <div className="nft-image">
-            <div className="nft-image-inner">NFT IMAGE</div>
+            <div className={`nft-image-inner${featuredNftImage ? ' has-image' : ''}`}>
+              {featuredNftImage ? (
+                <div className="nft-mat">
+                  <img src={featuredNftImage} alt={COLLECTION_NAME} />
+                </div>
+              ) : (
+                'NFT IMAGE'
+              )}
+            </div>
             <div className="nft-details">
               <p className="mint-name">Collection: {COLLECTION_NAME}</p>
               <p className="policy-id" title={DONADA_POLICY_ID}>
