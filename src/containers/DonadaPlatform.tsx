@@ -1595,22 +1595,24 @@ export default function DonadaPlatform() {
       <main className="main-content">
         <div className="nft-card">
           <div className="nft-image">
-            <div className={`nft-image-inner${featuredNftImage ? ' has-image' : ''}`}>
-              {featuredNftImage
-                ? <img src={featuredNftImage} alt={COLLECTION_NAME} />
-                : 'NFT IMAGE'}
-            </div>
-            <div className="nft-details">
-              <p className="mint-name">Collection: {COLLECTION_NAME}</p>
-              <p className="policy-id" title={DONADA_POLICY_ID}>
-                Policy ID: {DONADA_POLICY_ID.slice(0, 10)}…{DONADA_POLICY_ID.slice(-8)}
-              </p>
-              <p className="meta">
-                TOTAL # of NFTS: {nftStats != null ? nftStats.total : '—'}
-              </p>
-              <p className="meta">
-                # of available rentals: {nftStats != null ? nftStats.openRentals : '—'}
-              </p>
+            <div className="nft-image-frame">
+              <div className={`nft-image-inner${featuredNftImage ? ' has-image' : ''}`}>
+                {featuredNftImage
+                  ? <img src={featuredNftImage} alt={COLLECTION_NAME} />
+                  : 'NFT IMAGE'}
+              </div>
+              <div className="nft-details">
+                <p className="mint-name">Collection: {COLLECTION_NAME}</p>
+                <p className="policy-id" title={DONADA_POLICY_ID}>
+                  Policy ID: {DONADA_POLICY_ID.slice(0, 10)}…{DONADA_POLICY_ID.slice(-8)}
+                </p>
+                <p className="meta">
+                  TOTAL # of NFTS: {nftStats != null ? nftStats.total : '—'}
+                </p>
+                <p className="meta">
+                  # of available rentals: {nftStats != null ? nftStats.openRentals : '—'}
+                </p>
+              </div>
             </div>
           </div>
 
