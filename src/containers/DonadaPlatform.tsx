@@ -867,6 +867,20 @@ function selectAndPatchWallet(lucid: Lucid, cip30Api: unknown): void {
 
 // ── Wallet detection ──────────────────────────────────────────────────────────
 
+// Brand colours for common Cardano wallets — used as border/glow on hover.
+const WALLET_BRAND_COLORS: Record<string, string> = {
+  eternl:     '#1d2d50',
+  lace:       '#7b4dff',
+  nami:       '#349ea3',
+  yoroi:      '#1a44b7',
+  flint:      '#ea580c',
+  typhon:     '#5b4ee9',
+  vespr:      '#3b82f6',
+  gerowallet: '#10b981',
+  nufi:       '#4f46e5',
+  begin:      '#06b6d4',
+};
+
 function getAvailableWallets(): WalletInfo[] {
   if (!window.cardano) return [];
   return Object.entries(window.cardano as Record<string, { enable?: unknown; name?: string; icon?: string }>)
@@ -1585,8 +1599,17 @@ export default function DonadaPlatform() {
       {wallets.length > 1 && !connectedWallet && (
         <div className="wallet-list">
           {wallets.map((w) => (
-            <button key={w.key} className="select-btn" onClick={() => connectWallet(w.key)}>
-              {w.name}
+            <button
+              key={w.key}
+              className="wallet-icon-btn"
+              onClick={() => connectWallet(w.key)}
+              style={{ '--wallet-color': WALLET_BRAND_COLORS[w.key.toLowerCase()] ?? '#111' } as React.CSSProperties}
+            >
+              {w.icon
+                ? <img src={w.icon} alt={w.name} />
+                : <span className="wallet-icon-btn__fallback">{w.name.slice(0, 2).toUpperCase()}</span>
+              }
+              <span className="wallet-icon-btn__name">{w.name}</span>
             </button>
           ))}
         </div>

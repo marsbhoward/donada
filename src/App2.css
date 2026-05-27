@@ -569,7 +569,7 @@ margin:4px 0;
   background: linear-gradient(
     180deg,
     rgba(255,255,255,0) 0%,
-    rgba(0,0,0,0.65) 100%
+    rgba(0,0,0,0.65) 60%
   );
 
   color: #fff;
@@ -689,7 +689,7 @@ margin:4px 0;
   background: linear-gradient(
     180deg,
     rgba(255,255,255,0) 0%,
-    rgba(0,0,0,0.65) 100%
+    rgba(0,0,0,0.65) 60%
   );
 
   color: #fff;
@@ -812,4 +812,63 @@ button:focus{outline:3px solid rgba(0,0,0,0.08)}
   bottom: 0;
   width: auto;
   max-width: none;
+  height: 50%;
+}
+
+/* ── Wallet icon selection buttons ───────────────────────────────────────── */
+.wallet-list {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  padding: 4px 20px 10px;
+}
+
+/* Matches .select-btn shape/size; icon fills it, name overlays on hover */
+.wallet-icon-btn {
+  position: relative;
+  background: transparent;
+  border: 2px solid #000;
+  padding: 10px 18px;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-width: 52px;
+}
+
+.wallet-icon-btn img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  display: block;
+  border-radius: 4px;
+}
+
+.wallet-icon-btn__fallback {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #111;
+}
+
+/* Name overlays the button on hover */
+.wallet-icon-btn__name {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--wallet-color, #111);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  border-radius: 8px;
+}
+
+.wallet-icon-btn:hover .wallet-icon-btn__name {
+  opacity: 1;
 }
