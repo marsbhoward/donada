@@ -905,8 +905,6 @@ export default function DonadaPlatform() {
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
   const [connectedWallet, setConnectedWallet] = useState<ConnectedWalletState | null>(null);
   const connectedWalletRef = useRef<ConnectedWalletState | null>(null);
-  const [walletLocked, setWalletLocked] = useState(false);
-  const pendingOpRef = useRef<(() => Promise<void>) | null>(null);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [fullWalletAddress, setFullWalletAddress] = useState<string | null>(null);
 
@@ -1138,28 +1136,41 @@ export default function DonadaPlatform() {
     }
   };
 
-  // Keep ref in sync so pending-retry thunks always read the latest API
+  // Keep ref in sync so retry lambdas always read the latest wallet instance
   useEffect(() => {
     connectedWalletRef.current = connectedWallet;
   }, [connectedWallet]);
 
-  const reconnectWallet = async () => {
+  // Re-enables both the Mesh BrowserWallet and the raw CIP-30 API.
+  // Triggers the wallet extension's own unlock UI; returns true on success.
+  const refreshWallet = async (): Promise<boolean> => {
     const current = connectedWalletRef.current;
-    if (!current) return;
+    if (!current) return false;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const newApi = await (window as any).cardano[current.name].enable();
-      const updated = { ...current, api: newApi };
+      const [wallet, api] = await Promise.all([
+        BrowserWallet.enable(current.name),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).cardano[current.name].enable(),
+      ]);
+      const updated = { ...current, wallet, api };
       connectedWalletRef.current = updated;
       setConnectedWallet(updated);
-      setWalletLocked(false);
-      if (pendingOpRef.current) {
-        const op = pendingOpRef.current;
-        pendingOpRef.current = null;
-        await op();
-      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // Runs op(); if it throws APIError code -3 (wallet locked), refreshes the
+  // wallet (triggering the extension's unlock prompt) then retries once.
+  const withWalletRetry = async <T,>(op: () => Promise<T>): Promise<T> => {
+    try {
+      return await op();
     } catch (err) {
-      console.error('Wallet reconnect failed:', err);
+      if ((err as any)?.code !== -3) throw err;
+      const ok = await refreshWallet();
+      if (!ok) throw err;
+      return await op();
     }
   };
 
@@ -1170,10 +1181,10 @@ export default function DonadaPlatform() {
 
   // ----- Owner: load their own NFTs then open listing modal -----
   const loadOwnedNftsForListing = async () => {
-    if (!connectedWallet) return;
+    if (!connectedWalletRef.current) return;
     try {
       setLoadingOwnedNfts(true);
-      const assets = await connectedWallet.wallet.getAssets();
+      const assets = await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets());
       const filtered = assets.filter((a: NftAsset) => POLICY_IDS.includes(a.policyId));
       const enriched = (await Promise.all(
         filtered.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName, network))
@@ -1246,27 +1257,21 @@ export default function DonadaPlatform() {
     setListingError(null);
 
     try {
-      const lucid = await initLucid(network);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-
-      const { contractAddress } = await loadRentalValidator(lucid);
-      const txHash = await submitListing(
-        nft.name ?? nft.assetName,
-        fullWalletAddress,
-        rentalPrice,
-        Math.floor(nextDrawDate.getTime()),
-        contractAddress,
-        lucid
-      );
+      const txHash = await withWalletRetry(async () => {
+        const lucid = await initLucid(network);
+        selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
+        const { contractAddress } = await loadRentalValidator(lucid);
+        return submitListing(
+          nft.name ?? nft.assetName,
+          fullWalletAddress,
+          rentalPrice,
+          Math.floor(nextDrawDate.getTime()),
+          contractAddress,
+          lucid
+        );
+      });
       setListingTxHash(txHash);
     } catch (err) {
-      if ((err as any)?.code === -3) {
-        pendingOpRef.current = () => handleCreateListing({ nft, rentalPrice });
-        setWalletLocked(true);
-        return;
-      }
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Failed to list NFT:', err);
       setListingError(msg);
@@ -1284,20 +1289,14 @@ export default function DonadaPlatform() {
     setRentError(null);
 
     try {
-      const lucid = await initLucid(network);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-
-      const validator = await loadRentalValidator(lucid);
-      const result = await rentNft(nft.assetName, fullWalletAddress, validator, lucid);
+      const result = await withWalletRetry(async () => {
+        const lucid = await initLucid(network);
+        selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
+        const validator = await loadRentalValidator(lucid);
+        return rentNft(nft.assetName, fullWalletAddress, validator, lucid);
+      });
       setRentTxHash(result.txHash);
     } catch (err) {
-      if ((err as any)?.code === -3) {
-        pendingOpRef.current = () => handleRentNft({ nft, rentalPrice: '' });
-        setWalletLocked(true);
-        return;
-      }
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Failed to rent NFT:', err);
       setRentError(msg);
@@ -1341,12 +1340,12 @@ export default function DonadaPlatform() {
     setCancelTxHash(null);
     setCancelError(null);
     try {
-      const lucid = await initLucid(network);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-      const validator = await loadRentalValidator(lucid);
-      const result = await cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
+      const result = await withWalletRetry(async () => {
+        const lucid = await initLucid(network);
+        selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
+        const validator = await loadRentalValidator(lucid);
+        return cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
+      });
       setCancelTxHash(result.txHash);
       setCancelNfts(prev => {
         const updated = prev.filter(n => n.assetName !== nft.assetName);
@@ -1354,11 +1353,6 @@ export default function DonadaPlatform() {
         return updated;
       });
     } catch (err) {
-      if ((err as any)?.code === -3) {
-        pendingOpRef.current = () => handleCancelNft({ nft, rentalPrice: '' });
-        setWalletLocked(true);
-        return;
-      }
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Cancel failed:', err);
       setCancelError(msg);
@@ -1666,15 +1660,6 @@ export default function DonadaPlatform() {
           )}
         </div>
       </header>
-
-      {walletLocked && (
-        <div className="wallet-locked-banner">
-          Wallet locked — unlock it in your extension, then{' '}
-          <button className="wallet-locked-retry" onClick={reconnectWallet}>
-            Reconnect &amp; Retry
-          </button>
-        </div>
-      )}
 
       {wallets.length > 1 && !connectedWallet && (
         <div className="wallet-list">
