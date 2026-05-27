@@ -1161,6 +1161,8 @@ export default function DonadaPlatform() {
     }
   };
 
+  const WALLET_LOCKED_MSG = 'Wallet is locked — unlock it in your extension and try again.';
+
   // Runs op(); if it throws APIError code -3 (wallet locked), refreshes the
   // wallet (triggering the extension's unlock prompt) then retries once.
   const withWalletRetry = async <T,>(op: () => Promise<T>): Promise<T> => {
@@ -1182,6 +1184,7 @@ export default function DonadaPlatform() {
   // ----- Owner: load their own NFTs then open listing modal -----
   const loadOwnedNftsForListing = async () => {
     if (!connectedWalletRef.current) return;
+    setListingError(null);
     try {
       setLoadingOwnedNfts(true);
       const assets = await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets());
@@ -1198,6 +1201,7 @@ export default function DonadaPlatform() {
       setShowRentModal(true);
     } catch (err) {
       console.error('Failed to load NFTs', err);
+      setListingError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : 'Failed to load your NFTs — try again.');
     } finally {
       setLoadingOwnedNfts(false);
     }
@@ -1206,6 +1210,7 @@ export default function DonadaPlatform() {
   // ----- Renter: load available listings from the contract then open rent modal -----
   const loadListedNfts = async () => {
     if (!connectedWallet) return;
+    setRentError(null);
     try {
       setLoadingListedNfts(true);
       // Read-only Lucid — no wallet selection needed for querying UTxOs.
@@ -1243,6 +1248,7 @@ export default function DonadaPlatform() {
       setShowRentModal(true);
     } catch (err) {
       console.error('Failed to load listed NFTs:', err);
+      setRentError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : 'Failed to load listings — try again.');
     } finally {
       setLoadingListedNfts(false);
     }
@@ -1272,9 +1278,8 @@ export default function DonadaPlatform() {
       });
       setListingTxHash(txHash);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
       console.error('Failed to list NFT:', err);
-      setListingError(msg);
+      setListingError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsListing(false);
     }
@@ -1297,9 +1302,8 @@ export default function DonadaPlatform() {
       });
       setRentTxHash(result.txHash);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
       console.error('Failed to rent NFT:', err);
-      setRentError(msg);
+      setRentError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsRenting(false);
     }
@@ -1308,6 +1312,7 @@ export default function DonadaPlatform() {
   // ----- Owner: load cancellable listings into modal -----
   const loadCancellableListings = async () => {
     if (!fullWalletAddress || !connectedWallet) return;
+    setCancelError(null);
     setLoadingCancelListings(true);
     try {
       const lucid = await initLucid(network);
@@ -1327,6 +1332,7 @@ export default function DonadaPlatform() {
       setShowCancelModal(true);
     } catch (err) {
       console.error('Failed to load cancellable listings:', err);
+      setCancelError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : 'Failed to load listings — try again.');
     } finally {
       setLoadingCancelListings(false);
     }
@@ -1353,9 +1359,8 @@ export default function DonadaPlatform() {
         return updated;
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
       console.error('Cancel failed:', err);
-      setCancelError(msg);
+      setCancelError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsCancelling(false);
     }
