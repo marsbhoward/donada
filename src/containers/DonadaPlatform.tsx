@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import RentModal from '../components/RentModal';
 import { BrowserWallet } from '@meshsdk/core';
 import { fetchNftMetadata } from '../utils/nftMetadata';
@@ -904,6 +904,9 @@ export default function DonadaPlatform() {
   // Wallet
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
   const [connectedWallet, setConnectedWallet] = useState<ConnectedWalletState | null>(null);
+  const connectedWalletRef = useRef<ConnectedWalletState | null>(null);
+  const [walletLocked, setWalletLocked] = useState(false);
+  const pendingOpRef = useRef<(() => Promise<void>) | null>(null);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [fullWalletAddress, setFullWalletAddress] = useState<string | null>(null);
 
@@ -1135,6 +1138,31 @@ export default function DonadaPlatform() {
     }
   };
 
+  // Keep ref in sync so pending-retry thunks always read the latest API
+  useEffect(() => {
+    connectedWalletRef.current = connectedWallet;
+  }, [connectedWallet]);
+
+  const reconnectWallet = async () => {
+    const current = connectedWalletRef.current;
+    if (!current) return;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const newApi = await (window as any).cardano[current.name].enable();
+      const updated = { ...current, api: newApi };
+      connectedWalletRef.current = updated;
+      setConnectedWallet(updated);
+      setWalletLocked(false);
+      if (pendingOpRef.current) {
+        const op = pendingOpRef.current;
+        pendingOpRef.current = null;
+        await op();
+      }
+    } catch (err) {
+      console.error('Wallet reconnect failed:', err);
+    }
+  };
+
   const closeModal = () => {
     setShowRentModal(false);
     setRentMode(false);
@@ -1221,7 +1249,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWallet.api);
+      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
 
       const { contractAddress } = await loadRentalValidator(lucid);
       const txHash = await submitListing(
@@ -1234,6 +1262,11 @@ export default function DonadaPlatform() {
       );
       setListingTxHash(txHash);
     } catch (err) {
+      if ((err as any)?.code === -3) {
+        pendingOpRef.current = () => handleCreateListing({ nft, rentalPrice });
+        setWalletLocked(true);
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Failed to list NFT:', err);
       setListingError(msg);
@@ -1254,12 +1287,17 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWallet.api);
+      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
 
       const validator = await loadRentalValidator(lucid);
       const result = await rentNft(nft.assetName, fullWalletAddress, validator, lucid);
       setRentTxHash(result.txHash);
     } catch (err) {
+      if ((err as any)?.code === -3) {
+        pendingOpRef.current = () => handleRentNft({ nft, rentalPrice: '' });
+        setWalletLocked(true);
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Failed to rent NFT:', err);
       setRentError(msg);
@@ -1276,7 +1314,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWallet.api);
+      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
       const { contractAddress } = await loadRentalValidator(lucid);
       const utxos = await lucid.utxosAt(contractAddress);
       const owned = utxos.flatMap(u => {
@@ -1306,7 +1344,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWallet.api);
+      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
       const validator = await loadRentalValidator(lucid);
       const result = await cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
       setCancelTxHash(result.txHash);
@@ -1316,6 +1354,11 @@ export default function DonadaPlatform() {
         return updated;
       });
     } catch (err) {
+      if ((err as any)?.code === -3) {
+        pendingOpRef.current = () => handleCancelNft({ nft, rentalPrice: '' });
+        setWalletLocked(true);
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Cancel failed:', err);
       setCancelError(msg);
@@ -1352,7 +1395,7 @@ export default function DonadaPlatform() {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWallet.api);
+      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
 
       const { contractAddress } = await loadRentalValidator(lucid);
 
@@ -1557,7 +1600,7 @@ export default function DonadaPlatform() {
     try {
       const lucid = await initLucid(network);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWallet.api);
+      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
       const validator = await loadRentalValidator(lucid);
       await claimBackExpiredRentals(
         fullWalletAddress,
@@ -1623,6 +1666,15 @@ export default function DonadaPlatform() {
           )}
         </div>
       </header>
+
+      {walletLocked && (
+        <div className="wallet-locked-banner">
+          Wallet locked — unlock it in your extension, then{' '}
+          <button className="wallet-locked-retry" onClick={reconnectWallet}>
+            Reconnect &amp; Retry
+          </button>
+        </div>
+      )}
 
       {wallets.length > 1 && !connectedWallet && (
         <div className="wallet-list">

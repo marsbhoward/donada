@@ -872,3 +872,31 @@ button:focus{outline:3px solid rgba(0,0,0,0.08)}
 .wallet-icon-btn:hover .wallet-icon-btn__name {
   opacity: 1;
 }
+
+/* Wallet locked banner */
+.wallet-locked-banner {
+  background: #1a1a1a;
+  color: #fff;
+  text-align: center;
+  padding: 0.6rem 1rem;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.wallet-locked-retry {
+  background: #fff;
+  color: #000;
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wallet-locked-retry:hover {
+  background: #e0e0e0;
+}
