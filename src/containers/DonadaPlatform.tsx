@@ -932,6 +932,8 @@ export default function DonadaPlatform() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelTxHash, setCancelTxHash] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  // Whether the connected wallet owns any un-rented listings (controls section visibility)
+  const [hasActiveListings, setHasActiveListings] = useState(false);
 
   // Admin draw flow (only shown when project wallet is connected)
   const [drawPrizeAda, setDrawPrizeAda] = useState('');
@@ -1013,6 +1015,28 @@ export default function DonadaPlatform() {
     fetchStats();
     return () => { cancelled = true; };
   }, [network]);
+
+  // ----- Check if connected wallet has cancellable listings -----
+  useEffect(() => {
+    if (!fullWalletAddress) { setHasActiveListings(false); return; }
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const lucid = await initLucid(network);
+        const { contractAddress } = await loadRentalValidator(lucid);
+        const utxos = await lucid.utxosAt(contractAddress);
+        const hasAny = utxos.some(u => {
+          try {
+            const d = decodeDatum(u, lucid);
+            return d.owner === fullWalletAddress && d.renter === null;
+          } catch { return false; }
+        });
+        if (!cancelled) setHasActiveListings(hasAny);
+      } catch { if (!cancelled) setHasActiveListings(false); }
+    };
+    check();
+    return () => { cancelled = true; };
+  }, [fullWalletAddress, network]);
 
   // ----- Load next draw date from CSV -----
   useEffect(() => {
@@ -1286,7 +1310,11 @@ export default function DonadaPlatform() {
       const validator = await loadRentalValidator(lucid);
       const result = await cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
       setCancelTxHash(result.txHash);
-      setCancelNfts(prev => prev.filter(n => n.assetName !== nft.assetName));
+      setCancelNfts(prev => {
+        const updated = prev.filter(n => n.assetName !== nft.assetName);
+        setHasActiveListings(updated.length > 0);
+        return updated;
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('Cancel failed:', err);
@@ -1717,32 +1745,36 @@ export default function DonadaPlatform() {
                 </div>
               )}
 
-              <hr className="section-break" />
+              {hasActiveListings && (
+                <>
+                  <hr className="section-break" />
 
-              <div className="action-block">
-                <div className="action-text">Cancel Listing</div>
-                <button
-                  className="select-btn small"
-                  disabled={!connectedWallet || loadingCancelListings || isCancelling}
-                  onClick={loadCancellableListings}
-                >
-                  {loadingCancelListings ? 'Loading...' : isCancelling ? 'Cancelling...' : 'select'}
-                </button>
-              </div>
+                  <div className="action-block">
+                    <div className="action-text">Cancel Listing</div>
+                    <button
+                      className="select-btn small"
+                      disabled={!connectedWallet || loadingCancelListings || isCancelling}
+                      onClick={loadCancellableListings}
+                    >
+                      {loadingCancelListings ? 'Loading...' : isCancelling ? 'Cancelling...' : 'select'}
+                    </button>
+                  </div>
 
-              {cancelTxHash && (
-                <div className="action-block">
-                  <div className="action-text" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
-                    Cancelled! Tx: {cancelTxHash.slice(0, 12)}…
-                  </div>
-                </div>
-              )}
-              {cancelError && (
-                <div className="action-block">
-                  <div className="action-text" style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
-                    Error: {cancelError}
-                  </div>
-                </div>
+                  {cancelTxHash && (
+                    <div className="action-block">
+                      <div className="action-text" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
+                        Cancelled! Tx: {cancelTxHash.slice(0, 12)}…
+                      </div>
+                    </div>
+                  )}
+                  {cancelError && (
+                    <div className="action-block">
+                      <div className="action-text" style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
+                        Error: {cancelError}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
