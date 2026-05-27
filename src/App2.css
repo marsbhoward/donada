@@ -900,3 +900,44 @@ button:focus{outline:3px solid rgba(0,0,0,0.08)}
 .wallet-locked-retry:hover {
   background: #e0e0e0;
 }
+
+/* ── Mobile scrollability & compact layout ───────────────────────────────── */
+
+/* iOS in-app browsers need this to allow the page to scroll */
+html { height: 100%; }
+body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+@media (max-width: 520px) {
+  /* Reduce card padding so action rows have more room */
+  .nft-card {
+    padding: 14px 16px;
+  }
+
+  /* Shrink the image to ~50vw tall so it's compact but still visible */
+  .nft-image {
+    height: 52vw;
+    max-height: 220px;
+  }
+
+  /* Tighten section spacing */
+  .info-sections {
+    margin-top: 12px;
+    gap: 10px;
+  }
+
+  .section-break {
+    margin: 6px 0;
+  }
+
+  /* Slightly smaller text in the overlay so it fits the shorter image */
+  .mint-name  { font-size: clamp(11px, 3.2vw, 15px); }
+  .policy-id  { font-size: clamp(10px, 2.6vw, 12px); }
+  .meta       { font-size: clamp(9px,  2.4vw, 11px); }
+
+  /* Compact action rows */
+  .action-text { font-size: 1rem; }
+  .action-block { gap: 8px; }
+
+  /* Right section gaps */
+  .right-section { gap: 12px; }
+}
