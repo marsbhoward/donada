@@ -966,8 +966,8 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   align-items: center;
   justify-content: center;
   gap: 6px;
-  background: #f7f7f7;
-  border: 1px solid rgba(0,0,0,0.08);
+  border-left: 1px solid rgba(0,0,0,0.08);
+  border-right: 1px solid rgba(0,0,0,0.08);
   border-radius: 10px;
   padding: 18px 12px;
   box-sizing: border-box;
