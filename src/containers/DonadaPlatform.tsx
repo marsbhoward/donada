@@ -958,6 +958,11 @@ export default function DonadaPlatform() {
   // Featured image — first NFT under the policy, loaded from on-chain metadata
   const [featuredNftImage, setFeaturedNftImage] = useState<string | null>(null);
 
+  // Connected wallet's total raffle entries across all sources
+  const [userEntries, setUserEntries] = useState<{
+    listed: number; renting: number; participated: number; holding: number; total: number;
+  } | null>(null);
+
   // Invalidate validator cache whenever the network changes so the address is re-derived
   useEffect(() => { _validatorCache = null; }, [network]);
 
@@ -1036,6 +1041,51 @@ export default function DonadaPlatform() {
       } catch { if (!cancelled) setHasActiveListings(false); }
     };
     check();
+    return () => { cancelled = true; };
+  }, [fullWalletAddress, network]);
+
+  // ----- Compute the connected wallet's total raffle entries -----
+  useEffect(() => {
+    if (!fullWalletAddress) { setUserEntries(null); return; }
+    let cancelled = false;
+
+    const fetchEntries = async () => {
+      try {
+        // 1 & 2: contract UTxOs — owner listings + active rentals
+        const lucid = await initLucid(network);
+        const { contractAddress } = await loadRentalValidator(lucid);
+        const utxos = await lucid.utxosAt(contractAddress);
+        let listed = 0, renting = 0;
+        for (const u of utxos) {
+          try {
+            const d = decodeDatum(u, lucid);
+            if (d.owner === fullWalletAddress) listed++;
+            if (d.renter === fullWalletAddress) renting++;
+          } catch { /* skip malformed */ }
+        }
+
+        // 3: wallet_participants.csv — count rows matching this address
+        const wpRes = await fetch('/data/wallet_participants.csv');
+        const wpText = await wpRes.text();
+        const participated = wpText.trim().split('\n').slice(1)
+          .filter(line => line.replace(/"/g, '').trim() === fullWalletAddress)
+          .length;
+
+        // 4: nft_holders.csv — count rows matching this address
+        const nhRes = await fetch('/data/nft_holders.csv');
+        const nhText = await nhRes.text();
+        const holding = nhText.trim().split('\n').slice(1)
+          .filter(line => {
+            const addr = line.split(',')[0].replace(/"/g, '').trim();
+            return addr === fullWalletAddress;
+          })
+          .length;
+
+        if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding });
+      } catch { if (!cancelled) setUserEntries(null); }
+    };
+
+    fetchEntries();
     return () => { cancelled = true; };
   }, [fullWalletAddress, network]);
 
@@ -1687,26 +1737,52 @@ export default function DonadaPlatform() {
 
       <main className="main-content">
         <div className="nft-card">
-          <div className="nft-image">
-            <div className="nft-image-frame">
-              <div className={`nft-image-inner${featuredNftImage ? ' has-image' : ''}`}>
-                {featuredNftImage
-                  ? <img src={featuredNftImage} alt={COLLECTION_NAME} />
-                  : 'NFT IMAGE'}
-              </div>
-              <div className="nft-details">
-                <p className="mint-name">Collection: {COLLECTION_NAME}</p>
-                <p className="policy-id" title={DONADA_POLICY_ID}>
-                  Policy ID: {DONADA_POLICY_ID.slice(0, 10)}…{DONADA_POLICY_ID.slice(-8)}
-                </p>
-                <p className="meta">
-                  TOTAL # of NFTS: {nftStats != null ? nftStats.total : '—'}
-                </p>
-                <p className="meta">
-                  # of available rentals: {nftStats != null ? nftStats.openRentals : '—'}
-                </p>
+          <div className="nft-top-row">
+            <div className="nft-image">
+              <div className="nft-image-frame">
+                <div className={`nft-image-inner${featuredNftImage ? ' has-image' : ''}`}>
+                  {featuredNftImage
+                    ? <img src={featuredNftImage} alt={COLLECTION_NAME} />
+                    : 'NFT IMAGE'}
+                </div>
+                <div className="nft-details">
+                  <p className="mint-name">Collection: {COLLECTION_NAME}</p>
+                  <p className="policy-id" title={DONADA_POLICY_ID}>
+                    Policy ID: {DONADA_POLICY_ID.slice(0, 10)}…{DONADA_POLICY_ID.slice(-8)}
+                  </p>
+                  <p className="meta">
+                    TOTAL # of NFTS: {nftStats != null ? nftStats.total : '—'}
+                  </p>
+                  <p className="meta">
+                    # of available rentals: {nftStats != null ? nftStats.openRentals : '—'}
+                  </p>
+                </div>
               </div>
             </div>
+
+            {connectedWallet && (
+              <div className="entries-panel">
+                <div className="entries-total">
+                  {userEntries != null ? userEntries.total : '—'}
+                </div>
+                <div className="entries-label">Your Entries</div>
+                <hr className="entries-divider" />
+                <div className="entries-breakdown">
+                  <div className="entries-row">
+                    <span>Listed</span><span>{userEntries?.listed ?? '—'}</span>
+                  </div>
+                  <div className="entries-row">
+                    <span>Renting</span><span>{userEntries?.renting ?? '—'}</span>
+                  </div>
+                  <div className="entries-row">
+                    <span>Participated</span><span>{userEntries?.participated ?? '—'}</span>
+                  </div>
+                  <div className="entries-row">
+                    <span>Holding</span><span>{userEntries?.holding ?? '—'}</span>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="info-sections">

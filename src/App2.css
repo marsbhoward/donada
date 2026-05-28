@@ -941,3 +941,108 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   /* Right section gaps */
   .right-section { gap: 12px; }
 }
+
+/* ── NFT top row: image + entries panel side by side ─────────────────────── */
+.nft-top-row {
+  display: flex;
+  gap: 20px;
+  align-items: stretch;
+}
+
+/* Image takes remaining space; panel has a fixed width */
+.nft-top-row .nft-image {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Entries panel */
+.entries-panel {
+  width: 150px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #f7f7f7;
+  border: 1px solid rgba(0,0,0,0.08);
+  border-radius: 10px;
+  padding: 18px 12px;
+  box-sizing: border-box;
+}
+
+.entries-total {
+  font-size: 2.6rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -1px;
+}
+
+.entries-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.55;
+}
+
+.entries-divider {
+  width: 100%;
+  border: none;
+  height: 1px;
+  background: rgba(0,0,0,0.1);
+  margin: 4px 0;
+}
+
+.entries-breakdown {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.entries-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  opacity: 0.7;
+}
+
+.entries-row span:last-child {
+  font-weight: 600;
+}
+
+/* On mobile: panel sits below the image, full width, horizontal layout */
+@media (max-width: 520px) {
+  .nft-top-row {
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .entries-panel {
+    width: 100%;
+    flex-direction: row;
+    justify-content: space-around;
+    align-items: center;
+    padding: 12px 16px;
+    gap: 12px;
+  }
+
+  .entries-divider { display: none; }
+
+  .entries-breakdown {
+    flex-direction: row;
+    gap: 12px;
+    width: auto;
+  }
+
+  .entries-row {
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+  }
+
+  .entries-row span:last-child {
+    font-size: 0.9rem;
+  }
+}
