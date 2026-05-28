@@ -1702,7 +1702,7 @@ export default function DonadaPlatform() {
 
         <div className="user-controls">
           <button className="select-btn" onClick={handleSelectWallet}>
-            {connectedWallet ? 'Disconnect Wallet' : 'Select Wallet'}
+            {connectedWallet ? 'Disconnect Wallet' : 'Sign in with Wallet'}
           </button>
 
           {connectedWallet ? (
