@@ -781,55 +781,40 @@ align-items:center;
 button:focus{outline:3px solid rgba(0,0,0,0.08)}
 
 /* ── NFT image frame ─────────────────────────────────────────────────────────
-   Width-driven square: aspect-ratio:1/1 sets height = width so the frame is
-   always square regardless of the parent's explicit height. overflow:hidden
-   clips both the image and the gradient overlay to the same rounded corners,
-   guaranteeing their bottoms are always flush.
+   Square wrapper that acts as the positioning parent for both .nft-image-inner
+   and .nft-details.  aspect-ratio: 1/1 keeps it square at every breakpoint
+   without any per-breakpoint width overrides.
    ─────────────────────────────────────────────────────────────────────────── */
 .nft-image-frame {
   position: relative;
-  width: 100%;
+  height: 100%;
   aspect-ratio: 1 / 1;
-  height: auto;
-  border-radius: 0 0 12px 12px;
-  overflow: hidden;
+  max-width: 100%;
+  flex-shrink: 0;
 }
 
-/* inner fills the frame completely */
+/* inner fills the frame completely — max-width:100% overrides the base
+   media query that sets max-width:72% as a separate property */
 .nft-image-frame .nft-image-inner {
   width: 100%;
   height: 100%;
   max-width: 100%;
-  border-radius: 0;  /* frame handles rounding via overflow:hidden */
 }
 
-/* has-image: fill frame, natural aspect-ratio overridden by frame */
+/* override the has-image aspect-ratio trick — the frame IS the square now */
 .nft-image-frame .nft-image-inner.has-image {
   aspect-ratio: auto;
   width: 100%;
-  height: 100%;
 }
 
-/* gradient anchors flush to the bottom of the frame.
-   top:auto overrides the base top:49% so bottom:0 + height:50% take effect. */
+/* details spans the exact width of the frame at every breakpoint */
 .nft-image-frame .nft-details {
-  top: auto;
   left: 0;
   right: 0;
   bottom: 0;
   width: auto;
   max-width: none;
   height: 50%;
-  border-radius: 0; /* parent overflow:hidden already rounds the corners */
-}
-
-/* nft-image height is now driven by the frame's aspect-ratio, not fixed px */
-.nft-top-row .nft-image {
-  flex: 1;
-  min-width: 0;
-  height: auto;
-  align-items: flex-start;
-  justify-content: flex-start;
 }
 
 /* ── Wallet icon selection buttons ───────────────────────────────────────── */
@@ -1064,7 +1049,10 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   }
 }
 
-/* Ensure header stays above scrolling content */
+/* Sticky header — sits above all content including modals */
 .header {
+  position: sticky;
+  top: 0;
   z-index: 100;
+  background: #fff;
 }
