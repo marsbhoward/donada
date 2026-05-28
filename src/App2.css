@@ -809,12 +809,14 @@ button:focus{outline:3px solid rgba(0,0,0,0.08)}
 
 /* details spans the exact width of the frame at every breakpoint */
 .nft-image-frame .nft-details {
+  top: auto;      /* lets bottom:0 + height:50% take effect */
   left: 0;
   right: 0;
   bottom: 0;
   width: auto;
   max-width: none;
   height: 50%;
+  border-radius: 0 0 8px 8px; /* match .nft-image-inner bottom corners */
 }
 
 /* ── Wallet icon selection buttons ───────────────────────────────────────── */
