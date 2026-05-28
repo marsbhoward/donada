@@ -243,6 +243,7 @@ border-radius:12px;
 padding: 28px;
 background: #fff;
 border: 1px solid rgba(0,0,0,0.08);
+border-bottom: none;
 }
 
 
@@ -491,6 +492,7 @@ border-radius:12px;
 padding: 28px;
 background: #fff;
 border: 1px solid rgba(0,0,0,0.08);
+border-bottom: none;
 }
 
 
