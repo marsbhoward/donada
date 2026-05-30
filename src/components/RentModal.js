@@ -1,6 +1,10 @@
 // File: src/components/RentModal.jsx
 import React, { useEffect, useMemo, useState } from 'react';
 
+function formatAda(lovelace) {
+  return parseFloat((Number(lovelace) / 1_000_000).toFixed(2)).toString();
+}
+
 export default function RentModal({
   isOpen,
   onClose,
@@ -8,6 +12,7 @@ export default function RentModal({
   nfts = [],
   mode = 'list', // 'list' = owner sets price; 'rent' = fee shown from datum; 'cancel' = owner cancels listing
   nextDrawDate = null,
+  countdown = null,
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [rentalPrice, setRentalPrice] = useState('');
@@ -53,6 +58,13 @@ export default function RentModal({
     return items;
   }, [activeIndex, nfts]);
 
+  const activeNft = nfts[activeIndex];
+
+  // Count NFTs listed at the same rental fee as the active selection
+  const samePriceCount = mode === 'rent' && activeNft?.rentalFee != null
+    ? nfts.filter(n => n.rentalFee === activeNft.rentalFee).length
+    : 0;
+
   if (!isOpen) return null;
 
   return (
@@ -71,7 +83,7 @@ export default function RentModal({
           <div className="carousel-centered">
             {visibleItems.map(({ nft, index, position }) => (
               <div
-                key={`${nft.policyId}-${nft.assetName}`}
+                key={position}
                 className={`carousel-frame ${position}`}
                 onClick={() => setActiveIndex(index)}
               >
@@ -94,47 +106,66 @@ export default function RentModal({
                 {position !== 'active' && (
                   <div className="carousel-dim" />
                 )}
+                {position === 'active' && mode === 'rent' && (
+                  <div className="carousel-overlay">
+                    <div className="carousel-overlay-fee">
+                      {nft.rentalFee != null ? `₳ ${formatAda(nft.rentalFee)}` : '—'}
+                    </div>
+                    {samePriceCount > 0 && (
+                      <div className="carousel-overlay-count">
+                        {samePriceCount} NFT{samePriceCount !== 1 ? 's' : ''} listed at this price
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', width: '100%' }}>
-          {mode === 'cancel' ? (
-            <p className="price-input" style={{ textAlign: 'center', margin: '0.5rem 0', flex: 1 }}>
-              NFT will be returned to your wallet
-            </p>
-          ) : mode === 'rent' ? (
-            <p className="price-input" style={{ textAlign: 'center', margin: '0.5rem 0', flex: 1 }}>
-              Rental fee:{' '}
-              {nfts[activeIndex]?.rentalFee != null
-                ? `${(Number(nfts[activeIndex].rentalFee) / 1_000_000).toFixed(2)} ADA`
-                : '—'}
-            </p>
-          ) : (
-            <div style={{ position: 'relative', display: 'inline-block', flex: 1 }}>
-              <span style={{
-                position: 'absolute', left: '0.6rem', top: '61%', transform: 'translateY(-50%)',
-                pointerEvents: 'none', userSelect: 'none', opacity: 0.6, fontSize: '1rem', lineHeight: 1
-              }}>₳</span>
-              <input
-                className="price-input"
-                type="text"
-                inputMode="numeric"
-                placeholder="Lowest rental price"
-                value={rentalPrice}
-                onChange={(e) =>
-                  setRentalPrice(e.target.value.replace(/\D/g, ''))
-                }
-                style={{ paddingLeft: '1.6rem', width: '100%' }}
-              />
+        {mode === 'rent' ? (
+          <div className="modal-draw-info">
+            <div className="modal-draw-label">Next draw</div>
+            <div className="modal-draw-date">
+              {nextDrawDate ? nextDrawDate.toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' }) : '—'}
             </div>
-          )}
-          <div style={{ textAlign: 'right', whiteSpace: 'nowrap', opacity: 0.7, fontSize: '0.85rem' }}>
-            <div>Next draw</div>
-            <div>{nextDrawDate ? nextDrawDate.toLocaleDateString() : '—'}</div>
+            {countdown && (
+              <div className="modal-draw-countdown">
+                {countdown.days}D {countdown.hours}H {countdown.minutes}M {countdown.seconds}S
+              </div>
+            )}
           </div>
-        </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', width: '100%' }}>
+            {mode === 'cancel' ? (
+              <p className="price-input" style={{ textAlign: 'center', margin: '0.5rem 0', flex: 1 }}>
+                NFT will be returned to your wallet
+              </p>
+            ) : (
+              <div style={{ position: 'relative', display: 'inline-block', flex: 1 }}>
+                <span style={{
+                  position: 'absolute', left: '0.6rem', top: '61%', transform: 'translateY(-50%)',
+                  pointerEvents: 'none', userSelect: 'none', opacity: 0.6, fontSize: '1rem', lineHeight: 1
+                }}>₳</span>
+                <input
+                  className="price-input"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Lowest rental price"
+                  value={rentalPrice}
+                  onChange={(e) =>
+                    setRentalPrice(e.target.value.replace(/\D/g, ''))
+                  }
+                  style={{ paddingLeft: '1.6rem', width: '100%' }}
+                />
+              </div>
+            )}
+            <div style={{ textAlign: 'right', whiteSpace: 'nowrap', opacity: 0.7, fontSize: '0.85rem' }}>
+              <div>Next draw</div>
+              <div>{nextDrawDate ? nextDrawDate.toLocaleDateString() : '—'}</div>
+            </div>
+          </div>
+        )}
 
         <div className="modal-actions">
           <button className="select-btn" onClick={onClose}>

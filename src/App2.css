@@ -816,6 +816,7 @@ button:focus{outline:3px solid rgba(0,0,0,0.08)}
   width: auto;
   max-width: none;
   height: 50%;
+  margin: 0;      /* desktop media query sets margin:4px 0 which lifts visible bottom */
   border-radius: 0 0 8px 8px; /* match .nft-image-inner bottom corners */
 }
 
@@ -957,6 +958,7 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .nft-top-row .nft-image {
   flex: 1;
   min-width: 0;
+  align-items: flex-end;
 }
 
 /* Entries panel */
@@ -973,6 +975,29 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   border-radius: 10px;
   padding: 18px 12px;
   box-sizing: border-box;
+}
+
+/* +/− toggle — shown on mobile, hidden on desktop */
+.entries-toggle {
+  background: none;
+  border: 1px solid rgba(0,0,0,0.25);
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0;
+  flex-shrink: 0;
+  color: inherit;
+}
+
+/* Expandable breakdown — always visible on desktop */
+.entries-expandable {
+  width: 100%;
 }
 
 .entries-total {
@@ -1056,5 +1081,173 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   position: sticky;
   top: 0;
   z-index: 100;
-  background: #fff;
+}
+
+/* ── Mobile: no-scroll, everything fits in the viewport ─────────────────────
+   Frame is sized by card width (always square); image + info fit below header */
+@media (max-width: 520px) {
+  html, body { height: 100%; overflow: hidden; }
+  .app-container { height: 100%; min-height: 0; overflow: hidden; }
+
+  /* Frame: 70% of card width, square, centered */
+  .nft-image-frame {
+    width: 70%;
+    height: auto;
+    max-width: 100%;
+    aspect-ratio: 1 / 1;
+    margin: 0 auto;
+  }
+
+  /* Wrapper shrinks to frame's natural height */
+  .nft-top-row .nft-image {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    justify-content: center;
+  }
+
+  /* Breathing room above and below the entries strip; horizontal layout */
+  .entries-panel {
+    margin: 24px 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    overflow: hidden;
+    padding: 12px 14px;
+  }
+
+  /* Show +/− toggle on mobile */
+  .entries-toggle { display: flex; }
+
+  /* Breakdown slides in horizontally from the right */
+  .entries-expandable {
+    width: auto;
+    max-width: 0;
+    overflow: hidden;
+    opacity: 0;
+    transition: max-width 0.35s ease, opacity 0.25s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .entries-expandable.expanded {
+    max-width: 260px;
+    opacity: 1;
+  }
+
+  /* Breakdown items stay in a horizontal row, no wrapping */
+  .entries-breakdown {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 10px;
+    width: auto;
+  }
+  .entries-row {
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    font-size: 0.65rem;
+  }
+  .entries-row span:last-child { font-size: 0.78rem; }
+
+  /* Info sections side-by-side: halves the vertical space needed */
+  .info-sections {
+    flex-direction: row;
+    align-items: stretch; /* both columns same total height */
+    margin-top: 8px;
+    gap: 12px;
+  }
+
+  /* Each column is a flex column with no gap so flex:1 controls spacing */
+  .left-section, .right-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  /* Items before and after the separator each take equal flex share →
+     section-break lands at exactly 50% of column height in both columns */
+  .left-section > .info-block,
+  .right-section > .action-block {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  /* Reset default <p> margins so info blocks stay compact */
+  .info-block p { margin: 0; }
+  .info-block .label { margin-bottom: 2px; font-size: 0.82rem; }
+  .info-block .value { font-size: 0.88rem; }
+
+  .section-break { margin: 6px 0; }
+}
+
+/* ── Rent modal: image overlay (fee + count at price) ─────────────────────── */
+.carousel-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 8px 12px 10px;
+  background: rgba(225, 225, 225, 0.92);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-bottom: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.07);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.carousel-overlay-fee {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #111;
+  letter-spacing: 0.01em;
+}
+
+.carousel-overlay-count {
+  font-size: 0.7rem;
+  color: #444;
+  opacity: 0.85;
+}
+
+/* ── Rent modal: centered draw info with countdown ────────────────────────── */
+.modal-draw-info {
+  text-align: center;
+  margin: 0.75rem 0 0.25rem;
+  width: 100%;
+}
+
+.modal-draw-label {
+  font-size: 0.75rem;
+  opacity: 0.55;
+  margin-bottom: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.modal-draw-date {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.modal-draw-countdown {
+  font-size: 0.88rem;
+  opacity: 0.72;
+  margin-top: 4px;
+  letter-spacing: 0.04em;
+}
+
+/* Override: dim overlay must cover the full non-active frame */
+.carousel-dim {
+  top: 0;
+  bottom: 0;
 }

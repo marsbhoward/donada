@@ -695,7 +695,8 @@ async function claimBackExpiredRentals(
       .newTx()
       .payToAddress(datum.owner, utxo.assets)
       .addSigner(projectWalletAddress)
-      .validFrom(Number(datum.draw_date) + 1000);
+      .validFrom(Number(datum.draw_date) + 1000)
+      .validTo(Number(datum.draw_date) + 6 * 60 * 60 * 1000); // 6-hour TTL window
 
     const txHash = await completeV3Tx(txObj, utxo, redeemerHex, lucid, compiledCode);
     onProgress(`Done: ${txHash.slice(0, 12)}…`);
@@ -962,6 +963,7 @@ export default function DonadaPlatform() {
   const [userEntries, setUserEntries] = useState<{
     listed: number; renting: number; participated: number; holding: number; total: number;
   } | null>(null);
+  const [entriesExpanded, setEntriesExpanded] = useState(false);
 
   // Invalidate validator cache whenever the network changes so the address is re-derived
   useEffect(() => { _validatorCache = null; }, [network]);
@@ -1327,6 +1329,7 @@ export default function DonadaPlatform() {
         );
       });
       setListingTxHash(txHash);
+      setUserEntries(prev => prev ? { ...prev, listed: prev.listed + 1, total: prev.total + 1 } : prev);
     } catch (err) {
       console.error('Failed to list NFT:', err);
       setListingError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
@@ -1351,6 +1354,7 @@ export default function DonadaPlatform() {
         return rentNft(nft.assetName, fullWalletAddress, validator, lucid);
       });
       setRentTxHash(result.txHash);
+      setUserEntries(prev => prev ? { ...prev, renting: prev.renting + 1, total: prev.total + 1 } : prev);
     } catch (err) {
       console.error('Failed to rent NFT:', err);
       setRentError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
@@ -1531,15 +1535,16 @@ export default function DonadaPlatform() {
         headers: { project_id: blockfrostKey },
       });
       if (!genesisRes.ok) throw new Error(`Blockfrost /genesis failed: ${genesisRes.status}`);
-      const genesis = await genesisRes.json() as { system_start: string; slot_length: number };
-
-      const systemStartMs = new Date(genesis.system_start).getTime();
+      // Blockfrost returns system_start as a Unix timestamp in seconds (integer),
+      // not an ISO string — multiply by 1000 to get milliseconds.
+      const genesis = await genesisRes.json() as { system_start: number; slot_length: number };
+      const systemStartMs = genesis.system_start * 1000;
       const drawSlot = Math.floor((scheduledDrawDate.getTime() - systemStartMs) / (genesis.slot_length * 1000));
-      log(`Draw slot: ${drawSlot}`);
+      log(`Draw slot: ${drawSlot} (genesis start: ${new Date(systemStartMs).toISOString()})`);
 
       // Find the first block at or after the draw slot (not every slot has a block).
       let block: { hash: string; slot: number } | null = null;
-      for (let s = drawSlot; s <= drawSlot + 200 && !block; s++) {
+      for (let s = drawSlot; s <= drawSlot + 500 && !block; s++) {
         const res = await fetch(`${blockfrostBase}/blocks/slot/${s}`, {
           headers: { project_id: blockfrostKey },
         });
@@ -1618,6 +1623,10 @@ export default function DonadaPlatform() {
       await waitForTxOnChain(txHash, blockfrostBase, blockfrostKey, log);
       log('Claiming back expired rental NFTs to owners…');
       try {
+        // Wallet session may have expired during the confirmation wait — refresh before signing.
+        log('Refreshing wallet connection…');
+        const refreshed = await refreshWallet();
+        if (refreshed) selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
         const claimValidator = await loadRentalValidator(lucid);
         const claimedHashes = await claimBackExpiredRentals(
           fullWalletAddress,
@@ -1648,15 +1657,17 @@ export default function DonadaPlatform() {
     setClaimBackError(null);
     try {
       const lucid = await initLucid(network);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
       const validator = await loadRentalValidator(lucid);
-      await claimBackExpiredRentals(
-        fullWalletAddress,
-        validator,
-        lucid,
-        msg => setClaimBackLog(prev => [...prev, msg]),
-      );
+      await withWalletRetry(async () => {
+        selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
+        return claimBackExpiredRentals(
+          fullWalletAddress,
+          validator,
+          lucid,
+          msg => setClaimBackLog(prev => [...prev, msg]),
+        );
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('ClaimBack failed:', err);
@@ -1766,21 +1777,29 @@ export default function DonadaPlatform() {
                   {userEntries != null ? userEntries.total : '—'}
                 </div>
                 <div className="entries-label">Your Entries</div>
-                <hr className="entries-divider" />
-                <div className="entries-breakdown">
-                  <div className="entries-row">
-                    <span>Listed</span><span>{userEntries?.listed ?? '—'}</span>
-                  </div>
-                  <div className="entries-row">
-                    <span>Renting</span><span>{userEntries?.renting ?? '—'}</span>
-                  </div>
-                  <div className="entries-row">
-                    <span>Participated</span><span>{userEntries?.participated ?? '—'}</span>
-                  </div>
-                  <div className="entries-row">
-                    <span>Holding</span><span>{userEntries?.holding ?? '—'}</span>
+                <div className={`entries-expandable${entriesExpanded ? ' expanded' : ''}`}>
+                  <div className="entries-breakdown">
+                    <div className="entries-row">
+                      <span>Listed</span><span>{userEntries?.listed ?? '—'}</span>
+                    </div>
+                    <div className="entries-row">
+                      <span>Renting</span><span>{userEntries?.renting ?? '—'}</span>
+                    </div>
+                    <div className="entries-row">
+                      <span>Participated</span><span>{userEntries?.participated ?? '—'}</span>
+                    </div>
+                    <div className="entries-row">
+                      <span>Holding</span><span>{userEntries?.holding ?? '—'}</span>
+                    </div>
                   </div>
                 </div>
+                <button
+                  className="entries-toggle"
+                  onClick={() => setEntriesExpanded(e => !e)}
+                  aria-label={entriesExpanded ? 'Collapse entries' : 'Expand entries'}
+                >
+                  {entriesExpanded ? '−' : '+'}
+                </button>
               </div>
             )}
           </div>
@@ -2005,6 +2024,7 @@ export default function DonadaPlatform() {
         onClose={closeModal}
         onConfirm={rentMode ? handleRentNft : handleCreateListing}
         nextDrawDate={nextDrawDate as any}
+        countdown={countdown as any}
       />
 
       <RentModal
