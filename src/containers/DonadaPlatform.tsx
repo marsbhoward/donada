@@ -965,6 +965,7 @@ export default function DonadaPlatform() {
   // Connected wallet's total raffle entries across all sources
   const [userEntries, setUserEntries] = useState<{
     listed: number; renting: number; participated: number; holding: number; total: number;
+    freeEntrySnapshotTaken: boolean; holdingSnapshotTaken: boolean;
   } | null>(null);
   const [entriesExpanded, setEntriesExpanded] = useState(false);
 
@@ -1072,21 +1073,25 @@ export default function DonadaPlatform() {
         // 3: wallet_participants.csv — count rows matching this address
         const wpRes = await fetch('/data/wallet_participants.csv');
         const wpText = await wpRes.text();
-        const participated = wpText.trim().split('\n').slice(1)
+        const wpRows = wpText.trim().split('\n').slice(1).filter(l => l.trim());
+        const freeEntrySnapshotTaken = wpRows.length > 0;
+        const participated = wpRows
           .filter(line => line.replace(/"/g, '').trim() === fullWalletAddress)
           .length;
 
         // 4: nft_holders.csv — count rows matching this address
         const nhRes = await fetch('/data/nft_holders.csv');
         const nhText = await nhRes.text();
-        const holding = nhText.trim().split('\n').slice(1)
+        const nhRows = nhText.trim().split('\n').slice(1).filter(l => l.trim());
+        const holdingSnapshotTaken = nhRows.length > 0;
+        const holding = nhRows
           .filter(line => {
             const addr = line.split(',')[0].replace(/"/g, '').trim();
             return addr === fullWalletAddress;
           })
           .length;
 
-        if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding });
+        if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken, holdingSnapshotTaken });
       } catch { if (!cancelled) setUserEntries(null); }
     };
 
@@ -1809,10 +1814,12 @@ export default function DonadaPlatform() {
                       <span>Renting</span><span>{userEntries?.renting ?? '—'}</span>
                     </div>
                     <div className="entries-row">
-                      <span>Participated</span><span>{userEntries?.participated ?? '—'}</span>
+                      <span>Free Entry</span>
+                      <span>{!userEntries?.freeEntrySnapshotTaken ? '0' : (userEntries?.participated ?? '—')}</span>
                     </div>
                     <div className="entries-row">
-                      <span>Holding</span><span>{userEntries?.holding ?? '—'}</span>
+                      <span>Holding</span>
+                      <span>{!userEntries?.holdingSnapshotTaken ? '[no snapshot]' : (userEntries?.holding ?? '—')}</span>
                     </div>
                   </div>
                 </div>
