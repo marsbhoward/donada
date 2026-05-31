@@ -233,17 +233,19 @@ border-radius:10px;
 .main-content{
 display:flex;
 justify-content:center;
+padding: 0 16px;
+box-sizing: border-box;
 }
 
 
 .nft-card{
 width:100%;
 max-width: 880px;
-border-radius:12px;
+border-radius:0;
 padding: 28px;
 background: #fff;
-border: 1px solid rgba(0,0,0,0.08);
-border-bottom: none;
+border-left: 1px solid rgba(0,0,0,0.08);
+border-right: 1px solid rgba(0,0,0,0.08);
 }
 
 
@@ -482,17 +484,20 @@ border-radius:10px;
 .main-content{
 display:flex;
 justify-content:center;
+padding: 0 16px;
+box-sizing: border-box;
 }
 
 
 .nft-card{
 width:100%;
 max-width: 880px;
-border-radius:12px;
+border-radius:0;
 padding: 28px;
 background: #fff;
-border: 1px solid rgba(0,0,0,0.08);
-border-bottom: none;
+border-left: 1px solid rgba(0,0,0,0.08);
+border-right: 1px solid rgba(0,0,0,0.08);
+margin: 0 auto;
 }
 
 
@@ -1168,12 +1173,36 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
   /* Items before and after the separator each take equal flex share →
      section-break lands at exactly 50% of column height in both columns */
-  .left-section > .info-block,
-  .right-section > .action-block {
+  .left-section > .info-block {
     flex: 1;
     display: flex;
     flex-direction: column;
     justify-content: center;
+  }
+
+  .right-section > .action-block {
+    flex: 1;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  /* Prevent action-text from wrapping so both action-blocks stay same height */
+  .right-section > .action-block .action-text {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.82rem;
+    text-align: center;
+  }
+
+  /* Button must not shrink below its natural size */
+  .right-section > .action-block .select-btn {
+    flex-shrink: 0;
   }
 
   /* Reset default <p> margins so info blocks stay compact */
@@ -1246,8 +1275,200 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   letter-spacing: 0.04em;
 }
 
+/* Extra breathing room between DONADA link and the toggle beneath it (+25%) */
+.logo-group .logo {
+  padding-bottom: 8px;
+}
+
+/* Sign-in button slide transition */
+@keyframes sign-slide-out {
+  from { transform: translateX(0);     opacity: 1; }
+  to   { transform: translateX(160%);  opacity: 0; }
+}
+
+@keyframes sign-slide-in {
+  from { transform: translateX(160%);  opacity: 0; }
+  to   { transform: translateX(0);     opacity: 1; }
+}
+
+.sign-btn-out { animation: sign-slide-out 0.28s ease forwards; }
+.sign-btn-in  { animation: sign-slide-in  0.28s ease forwards; }
+
+/* Clip slide animation within the button only — label position unaffected */
+.sign-btn-wrapper {
+  overflow: hidden;
+  margin-top: -6px;
+}
+
 /* Override: dim overlay must cover the full non-active frame */
 .carousel-dim {
   top: 0;
   bottom: 0;
+}
+
+/* ── Header: two-column flex, full height so toggle can sit at the bottom ── */
+.header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: stretch !important;
+  padding: 20px 20px !important;
+}
+
+/* DONADA at top, [light]/[dark] pushed to the bottom of the header */
+.logo-group {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0;
+}
+
+/* Sign-in button at top, wallet label pushed to the bottom — mirrors logo-group */
+.user-controls {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 0 !important;
+  max-width: none !important;
+}
+
+/* Sign-in button: plain text with white border pill */
+.user-controls .select-btn {
+  background: none;
+  border: 1.5px solid white;
+  border-radius: 8px;
+  padding: 5px 14px;
+  margin: 0 0 8px 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: center;
+  line-height: 1.2;
+  width: auto;
+}
+
+/* Wallet label — same dim styling as the theme toggle, sits at the bottom */
+.user-label {
+  font-size: 0.68rem !important;
+  opacity: 0.5;
+  color: inherit;
+  text-align: center;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+/* Theme toggle */
+.theme-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.68rem;
+  opacity: 0.5;
+  color: inherit;
+  padding: 0;
+  font-family: inherit;
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+
+.theme-toggle:hover {
+  opacity: 1;
+}
+
+/* App container always fills full viewport */
+.app-container {
+  width: 100%;
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+/* main-content fills remaining height and centers the card */
+.main-content {
+  flex: 1;
+  display: flex !important;
+  align-items: center !important;
+}
+
+/* ── Dark mode ───────────────────────────────────────────────────────────── */
+.dark-mode {
+  background: #1c1c1e;
+  color: #fff;
+}
+
+.dark-mode .main-content {
+  background: #1c1c1e;
+}
+
+.dark-mode .nft-card {
+  background: #1c1c1e;
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+.dark-mode .nft-image-inner {
+  background: linear-gradient(180deg, #2c2c2e 0%, #252527 40%, #2c2c2e 60%);
+  border-color: rgba(255, 255, 255, 0.06);
+  color: #666;
+}
+
+.dark-mode .select-btn {
+  background: #000;
+  color: #fff;
+  border-color: #555;
+}
+
+.dark-mode .info-block .value {
+  color: #fff;
+}
+
+.dark-mode .info-block .label {
+  color: #fff;
+}
+
+.dark-mode .section-break {
+  background: linear-gradient(90deg, rgba(255,255,255,0.1), rgba(255,255,255,0.1));
+}
+
+.dark-mode .entries-panel {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark-mode .entries-toggle {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.dark-mode .modal-sheet {
+  background: #2c2c2e;
+  color: #fff;
+}
+
+.dark-mode .modal-backdrop {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.dark-mode .price-input {
+  background: #3a3a3c;
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.dark-mode .wallet-list {
+  background: #1c1c1e;
+}
+
+.dark-mode .wallet-icon-btn {
+  background: #3a3a3c;
+}
+
+.dark-mode .wallet-icon-btn__fallback {
+  color: #fff;
+}
+
+.dark-mode .action-text {
+  color: #fff;
 }

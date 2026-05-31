@@ -906,7 +906,6 @@ export default function DonadaPlatform() {
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
   const [connectedWallet, setConnectedWallet] = useState<ConnectedWalletState | null>(null);
   const connectedWalletRef = useRef<ConnectedWalletState | null>(null);
-  const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [fullWalletAddress, setFullWalletAddress] = useState<string | null>(null);
 
   // Modal
@@ -958,6 +957,10 @@ export default function DonadaPlatform() {
   const [nftStats, setNftStats] = useState<{ total: number; openRentals: number } | null>(null);
   // Featured image — first NFT under the policy, loaded from on-chain metadata
   const [featuredNftImage, setFeaturedNftImage] = useState<string | null>(null);
+
+  // Theme
+  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [signBtnAnim, setSignBtnAnim] = useState<'idle' | 'out' | 'in'>('idle');
 
   // Connected wallet's total raffle entries across all sources
   const [userEntries, setUserEntries] = useState<{
@@ -1160,7 +1163,6 @@ export default function DonadaPlatform() {
   const handleSelectWallet = () => {
     if (connectedWallet) {
       setConnectedWallet(null);
-      setWalletAddress(null);
       setFullWalletAddress(null);
       setWallets([]);
       setOwnedNfts([]);
@@ -1181,7 +1183,6 @@ export default function DonadaPlatform() {
 
       setConnectedWallet({ name: walletKey, wallet, api });
       setFullWalletAddress(fullAddress);
-      setWalletAddress(fullAddress ? `${fullAddress.slice(0, 7)}…` : null);
       setWallets([]);
     } catch (err) {
       console.error('Error connecting to wallet:', err);
@@ -1226,6 +1227,16 @@ export default function DonadaPlatform() {
       if (!ok) throw err;
       return await op();
     }
+  };
+
+  const handleSignBtnClick = () => {
+    if (signBtnAnim !== 'idle') return;
+    setSignBtnAnim('out');
+    setTimeout(() => {
+      handleSelectWallet();
+      setSignBtnAnim('in');
+      setTimeout(() => setSignBtnAnim('idle'), 300);
+    }, 280);
   };
 
   const closeModal = () => {
@@ -1621,24 +1632,30 @@ export default function DonadaPlatform() {
       // regardless of whether they had an active renter.
       log('Waiting for payout to confirm before returning NFTs…');
       await waitForTxOnChain(txHash, blockfrostBase, blockfrostKey, log);
-      log('Claiming back expired rental NFTs to owners…');
+      // Allow Blockfrost UTxO index and wallet extension cache to settle after payout
+      log('Settling — waiting 15s before returning NFTs…');
+      await new Promise<void>(r => setTimeout(r, 15_000));
+      log('Returning rental NFTs to owners…');
       try {
-        // Wallet session may have expired during the confirmation wait — refresh before signing.
-        log('Refreshing wallet connection…');
-        const refreshed = await refreshWallet();
-        if (refreshed) selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-        const claimValidator = await loadRentalValidator(lucid);
-        const claimedHashes = await claimBackExpiredRentals(
-          fullWalletAddress,
-          claimValidator,
-          lucid,
-          msg => setDrawLog(prev => [...prev, msg]),
-        );
+        // Fresh lucid instance ensures clean Blockfrost UTxO state (not stale from payout tx)
+        const claimLucid = await initLucid(network);
+        const claimValidator = await loadRentalValidator(claimLucid);
+        const claimedHashes = await withWalletRetry(async () => {
+          selectAndPatchWallet(claimLucid, connectedWalletRef.current!.api);
+          return claimBackExpiredRentals(
+            fullWalletAddress,
+            claimValidator,
+            claimLucid,
+            msg => setDrawLog(prev => [...prev, msg]),
+          );
+        });
         log(`Returned ${claimedHashes.length} NFT(s) to owner(s).`);
       } catch (cbErr) {
         const cbMsg = cbErr instanceof Error ? cbErr.message : String(cbErr);
         // "No expired UTxOs" just means no rentals were active this cycle
-        if (!cbMsg.includes('No expired')) log(`Claim-back note: ${cbMsg}`);
+        if (!cbMsg.includes('No expired')) {
+          setDrawError(`NFT return failed — use "Claim Back" in admin to retry: ${cbMsg}`);
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1703,27 +1720,33 @@ export default function DonadaPlatform() {
   // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="app-container">
+    <div className={`app-container${isDarkMode ? ' dark-mode' : ''}`}>
       <header className="header">
-        <h1 className="logo">
-          <a href="https://donada.io" target="_blank" rel="noopener noreferrer">
-            DONADA
-          </a>
-        </h1>
+        <div className="logo-group">
+          <h1 className="logo">
+            <a href="https://donada.io" target="_blank" rel="noopener noreferrer">
+              DONADA
+            </a>
+          </h1>
+          <button className="theme-toggle" onClick={() => setIsDarkMode(d => !d)}>
+            {isDarkMode ? '[dark]' : '[light]'}
+          </button>
+        </div>
 
         <div className="user-controls">
-          <button className="select-btn" onClick={handleSelectWallet}>
-            {connectedWallet ? 'Disconnect Wallet' : 'Sign in with Wallet'}
-          </button>
+          <div className="sign-btn-wrapper">
+            <button
+              className={`select-btn sign-btn-${signBtnAnim}`}
+              onClick={handleSignBtnClick}
+              disabled={signBtnAnim !== 'idle'}
+            >
+              {connectedWallet ? 'Disconnect Wallet' : 'Sign in with Wallet'}
+            </button>
+          </div>
 
-          {connectedWallet ? (
-            <div className="user-label">
-              <div className="wallet-name">{connectedWallet.name} Connected</div>
-              <div className="wallet-address">{walletAddress}</div>
-            </div>
-          ) : (
-            <span className="user-label">No wallet</span>
-          )}
+          <span className="user-label">
+            {connectedWallet ? `${connectedWallet.name} Connected` : '[No Wallet]'}
+          </span>
         </div>
       </header>
 
@@ -1829,7 +1852,7 @@ export default function DonadaPlatform() {
 
             <div className="right-section">
               <div className="action-block">
-                <div className="action-text">Rent at price</div>
+                <div className="action-text">Browse Rental Listings</div>
                 <button
                   className="select-btn small"
                   disabled={!connectedWallet || !countdown || loadingListedNfts || isRenting}
