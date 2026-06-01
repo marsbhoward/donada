@@ -696,7 +696,7 @@ async function claimBackExpiredRentals(
       .payToAddress(datum.owner, utxo.assets)
       .addSigner(projectWalletAddress)
       .validFrom(Number(datum.draw_date) + 1000)
-      .validTo(Number(datum.draw_date) + 6 * 60 * 60 * 1000); // 6-hour TTL window
+      .validTo(Date.now() + 2 * 60 * 60 * 1000); // 2 hours from now
 
     const txHash = await completeV3Tx(txObj, utxo, redeemerHex, lucid, compiledCode);
     onProgress(`Done: ${txHash.slice(0, 12)}…`);
