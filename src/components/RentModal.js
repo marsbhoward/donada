@@ -44,15 +44,16 @@ export default function RentModal({
     }
 
     const sorted = [...nfts];
+    const fee = (n) => n.rentalFee != null ? Number(n.rentalFee) : Infinity;
     if (sortBy === 'price-asc') {
-      sorted.sort((a, b) => (a.rentalFee ?? Infinity) - (b.rentalFee ?? Infinity));
+      sorted.sort((a, b) => fee(a) - fee(b));
     } else if (sortBy === 'price-desc') {
-      sorted.sort((a, b) => (b.rentalFee ?? -Infinity) - (a.rentalFee ?? -Infinity));
+      sorted.sort((a, b) => fee(b) - fee(a));
     } else if (sortBy === 'count-desc') {
       sorted.sort((a, b) => {
         const countDiff = (priceCount[b.rentalFee ?? 'null'] || 0) - (priceCount[a.rentalFee ?? 'null'] || 0);
         if (countDiff !== 0) return countDiff;
-        return (a.rentalFee ?? Infinity) - (b.rentalFee ?? Infinity);
+        return fee(a) - fee(b);
       });
     }
     return sorted;

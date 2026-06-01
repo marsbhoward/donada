@@ -1394,6 +1394,12 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+
+.app-container.dimming {
+  opacity: 0.15;
 }
 
 /* main-content fills remaining height and centers the card */

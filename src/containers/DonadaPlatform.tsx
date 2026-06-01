@@ -960,6 +960,7 @@ export default function DonadaPlatform() {
 
   // Theme
   const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDimming, setIsDimming] = useState(false);
   const [signBtnAnim, setSignBtnAnim] = useState<'idle' | 'out' | 'in'>('idle');
 
   // Connected wallet's total raffle entries across all sources
@@ -1725,7 +1726,7 @@ export default function DonadaPlatform() {
   // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
-    <div className={`app-container${isDarkMode ? ' dark-mode' : ''}`}>
+    <div className={`app-container${isDarkMode ? ' dark-mode' : ''}${isDimming ? ' dimming' : ''}`}>
       <header className="header">
         <div className="logo-group">
           <h1 className="logo">
@@ -1733,7 +1734,13 @@ export default function DonadaPlatform() {
               DONADA
             </a>
           </h1>
-          <button className="theme-toggle" onClick={() => setIsDarkMode(d => !d)}>
+          <button className="theme-toggle" onClick={() => {
+            setIsDimming(true);
+            setTimeout(() => {
+              setIsDarkMode(d => !d);
+              setIsDimming(false);
+            }, 150);
+          }}>
             {isDarkMode ? '[dark]' : '[light]'}
           </button>
         </div>
