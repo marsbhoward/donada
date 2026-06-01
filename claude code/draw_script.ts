@@ -465,16 +465,16 @@ async function blockfrostGet<T>(path: string): Promise<T> {
 
 async function waitForTxConfirmed(txHash: string, maxWaitMs = 120_000): Promise<void> {
   const deadline = Date.now() + maxWaitMs;
-  console.log(`Waiting for payout tx ${txHash.slice(0, 12)}… to be confirmed...`);
+  console.log(`  Waiting for tx ${txHash.slice(0, 12)}… to confirm...`);
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, 15_000));
     try {
       await blockfrostGet(`/txs/${txHash}`);
-      console.log('Payout tx confirmed.');
+      console.log(`  Tx confirmed.`);
       return;
     } catch { /* not yet indexed */ }
   }
-  console.warn(`Payout tx not confirmed within ${maxWaitMs / 1000}s — proceeding with ClaimBack`);
+  console.warn(`  Tx not confirmed within ${maxWaitMs / 1000}s — proceeding anyway`);
 }
 
 // ── ClaimBack helpers ─────────────────────────────────────────────────────────
@@ -520,6 +520,9 @@ async function claimBackRentalUtxos(
 
       const txHash = await completeV3Tx(txObj, utxo, redeemerHex, lucid, compiledCode);
       console.log(`  Claimed! Tx: ${txHash}`);
+      // Wait for this tx to be indexed before building the next one — prevents
+      // the next tx from reusing UTxOs already spent by this claim-back.
+      await waitForTxConfirmed(txHash);
     } catch (err) {
       console.error(`  Failed (${utxo.txHash}#${utxo.outputIndex}):`, err);
     }

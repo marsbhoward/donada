@@ -5,6 +5,12 @@ function formatAda(lovelace) {
   return parseFloat((Number(lovelace) / 1_000_000).toFixed(2)).toString();
 }
 
+const SORT_OPTIONS = [
+  { value: 'price-asc',   label: 'Price: Low to High' },
+  { value: 'price-desc',  label: 'Price: High to Low' },
+  { value: 'count-desc',  label: 'Most Listed Price' },
+];
+
 export default function RentModal({
   isOpen,
   onClose,
@@ -16,14 +22,41 @@ export default function RentModal({
 }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [rentalPrice, setRentalPrice] = useState('');
+  const [sortBy, setSortBy] = useState('price-asc');
 
   // Reset state when modal opens or NFTs change
   useEffect(() => {
     if (isOpen) {
       setActiveIndex(0);
       setRentalPrice('');
+      setSortBy('price-asc');
     }
   }, [isOpen, nfts]);
+
+  // Sorted NFT list (only applied in rent mode)
+  const sortedNfts = useMemo(() => {
+    if (mode !== 'rent' || !nfts.length) return nfts;
+
+    const priceCount = {};
+    for (const n of nfts) {
+      const key = n.rentalFee ?? 'null';
+      priceCount[key] = (priceCount[key] || 0) + 1;
+    }
+
+    const sorted = [...nfts];
+    if (sortBy === 'price-asc') {
+      sorted.sort((a, b) => (a.rentalFee ?? Infinity) - (b.rentalFee ?? Infinity));
+    } else if (sortBy === 'price-desc') {
+      sorted.sort((a, b) => (b.rentalFee ?? -Infinity) - (a.rentalFee ?? -Infinity));
+    } else if (sortBy === 'count-desc') {
+      sorted.sort((a, b) => {
+        const countDiff = (priceCount[b.rentalFee ?? 'null'] || 0) - (priceCount[a.rentalFee ?? 'null'] || 0);
+        if (countDiff !== 0) return countDiff;
+        return (a.rentalFee ?? Infinity) - (b.rentalFee ?? Infinity);
+      });
+    }
+    return sorted;
+  }, [nfts, sortBy, mode]);
 
   /**
    * Carousel logic
@@ -32,9 +65,9 @@ export default function RentModal({
    * - Always centered with equal sides
    */
   const visibleItems = useMemo(() => {
-    if (!nfts.length) return [];
+    if (!sortedNfts.length) return [];
 
-    const total = nfts.length;
+    const total = sortedNfts.length;
     const maxVisible = total <= 4 ? 3 : 5;
     const sideCount = Math.floor(maxVisible / 2);
 
@@ -44,7 +77,7 @@ export default function RentModal({
       const index = (activeIndex + offset + total) % total;
 
       items.push({
-        nft: nfts[index],
+        nft: sortedNfts[index],
         index,
         position:
           offset === 0
@@ -56,13 +89,13 @@ export default function RentModal({
     }
 
     return items;
-  }, [activeIndex, nfts]);
+  }, [activeIndex, sortedNfts]);
 
-  const activeNft = nfts[activeIndex];
+  const activeNft = sortedNfts[activeIndex];
 
   // Count NFTs listed at the same rental fee as the active selection
   const samePriceCount = mode === 'rent' && activeNft?.rentalFee != null
-    ? nfts.filter(n => n.rentalFee === activeNft.rentalFee).length
+    ? sortedNfts.filter(n => n.rentalFee === activeNft.rentalFee).length
     : 0;
 
   if (!isOpen) return null;
@@ -75,7 +108,21 @@ export default function RentModal({
       >
         <h3>{mode === 'cancel' ? 'Cancel Listing' : 'Select NFT to Rent'}</h3>
 
-        {nfts.length === 0 && (
+        {mode === 'rent' && nfts.length > 1 && (
+          <div className="sort-controls">
+            {SORT_OPTIONS.map(opt => (
+              <button
+                key={opt.value}
+                className={`sort-btn${sortBy === opt.value ? ' active' : ''}`}
+                onClick={() => { setSortBy(opt.value); setActiveIndex(0); }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {sortedNfts.length === 0 && (
           <p>No NFTs available for this policy.</p>
         )}
 
@@ -173,10 +220,10 @@ export default function RentModal({
           </button>
           <button
             className="select-btn"
-            disabled={!nfts[activeIndex] || (mode === 'list' && !rentalPrice)}
+            disabled={!sortedNfts[activeIndex] || (mode === 'list' && !rentalPrice)}
             onClick={() =>
               onConfirm({
-                nft: nfts[activeIndex],
+                nft: sortedNfts[activeIndex],
                 rentalPrice
               })
             }

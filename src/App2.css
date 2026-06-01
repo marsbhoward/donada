@@ -1481,3 +1481,37 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .dark-mode .action-text {
   color: #fff;
 }
+
+/* ── Rent modal sort controls ───────────────────────────────────────────── */
+.sort-controls {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.sort-btn {
+  flex: 1;
+  background: none;
+  border: 1px solid rgba(0,0,0,0.15);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  white-space: nowrap;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+
+.sort-btn:hover { opacity: 0.9; }
+
+.sort-btn.active {
+  opacity: 1;
+  border-color: rgba(0,0,0,0.5);
+  font-weight: 600;
+}
+
+.dark-mode .sort-btn { border-color: rgba(255,255,255,0.2); }
+.dark-mode .sort-btn.active { border-color: rgba(255,255,255,0.7); }
