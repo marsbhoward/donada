@@ -455,7 +455,7 @@ function findCollateral(walletUtxos: any): any | null {
 //   add_plutus_v3_script() method and silently drops them via add_existing().
 async function completeV3Tx(
   txObj: any,
-  scriptUtxo: UTxO,
+  scriptUtxo: UTxO | UTxO[],
   redeemerHex: string,
   lucid: Lucid,
   compiledCode: string,
@@ -470,16 +470,18 @@ async function completeV3Tx(
     task = (txObj as any).tasks.shift();
   }
 
-  // Add the script input.  PlutusWitness.new(PlutusData) is what CML accepts; ExUnits
-  // will be 0 in the redeemers from build_tx(), which we fix up after balance().
-  const cmlScriptUtxo = utxoToCml(scriptUtxo);
+  // Add all script inputs. Each gets the same redeemer data; CML assigns indices
+  // by sorted input order, which the synthetic-redeemer loop below handles.
+  const scriptUtxos = Array.isArray(scriptUtxo) ? scriptUtxo : [scriptUtxo];
   const redeemerData = C.PlutusData.from_bytes(fromHex(redeemerHex));
-  txObj.txBuilder.add_input(
-    cmlScriptUtxo,
-    (C as any).ScriptWitness.new_plutus_witness(
-      C.PlutusWitness.new(redeemerData, undefined, undefined)
-    ),
-  );
+  for (const su of scriptUtxos) {
+    txObj.txBuilder.add_input(
+      utxoToCml(su),
+      (C as any).ScriptWitness.new_plutus_witness(
+        C.PlutusWitness.new(redeemerData, undefined, undefined)
+      ),
+    );
+  }
 
   // Collateral is required for any Plutus-spending transaction.
   const walletUtxos = await lucid.wallet.getUtxosCore();
@@ -676,39 +678,29 @@ async function claimBackExpiredRentals(
 
   if (expired.length === 0) throw new Error('No expired rental UTxOs found at the contract address.');
 
-  onProgress(`Found ${expired.length} expired rental UTxO(s).`);
-  const hashes: string[] = [];
+  onProgress(`Found ${expired.length} expired rental UTxO(s) — batching into one tx…`);
 
-  // Pull blockfrost params from lucid's provider so we can poll for confirmation
-  // between sequential claimbacks — prevents stale UTxO conflicts on the wallet.
-  const provider = (lucid as any).provider;
-  const bfBase = provider?.url ?? '';
-  const bfKey  = provider?.projectId ?? '';
+  const datums = expired.map(u => decodeDatum(u, lucid));
+  datums.forEach(d => onProgress(`  Returning ${d.nft_asset_name}…`));
 
-  for (let idx = 0; idx < expired.length; idx++) {
-    const utxo = expired[idx];
-    const datum = decodeDatum(utxo, lucid);
-    onProgress(`Claiming back ${datum.nft_asset_name}…`);
+  // validFrom must be after the latest draw_date so all claims are valid simultaneously
+  const maxDrawDate = datums.reduce((max, d) => d.draw_date > max ? d.draw_date : max, datums[0].draw_date);
 
-    const redeemerHex = Data.to(new Constr(2, [])); // ClaimBack = index 2
-    const txObj = lucid
-      .newTx()
-      .payToAddress(datum.owner, utxo.assets)
-      .addSigner(projectWalletAddress)
-      .validFrom(Number(datum.draw_date) + 1000)
-      .validTo(Date.now() + 2 * 60 * 60 * 1000); // 2 hours from now
+  const redeemerHex = Data.to(new Constr(2, [])); // ClaimBack = index 2
+  let txObj = lucid
+    .newTx()
+    .addSigner(projectWalletAddress)
+    .validFrom(Number(maxDrawDate) + 1000)
+    .validTo(Date.now() + 2 * 60 * 60 * 1000);
 
-    const txHash = await completeV3Tx(txObj, utxo, redeemerHex, lucid, compiledCode);
-    onProgress(`Done: ${txHash.slice(0, 12)}…`);
-    hashes.push(txHash);
-
-    // Wait for each claimback to confirm before spending wallet UTxOs for the next one
-    if (idx < expired.length - 1) {
-      await waitForTxOnChain(txHash, bfBase, bfKey, onProgress);
-    }
+  for (let i = 0; i < expired.length; i++) {
+    txObj = txObj.payToAddress(datums[i].owner, expired[i].assets);
   }
 
-  return hashes;
+  const txHash = await completeV3Tx(txObj, expired, redeemerHex, lucid, compiledCode);
+  onProgress(`Done: ${txHash.slice(0, 12)}…`);
+
+  return [txHash];
 }
 
 // Queries Blockfrost for all wallets holding any NFT under DONADA_POLICY_ID,
