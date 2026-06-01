@@ -197,7 +197,7 @@ function findCollateral(walletUtxos: any): any | null {
 
 async function completeV3Tx(
   txObj:        any,
-  scriptUtxo:   UTxO,
+  scriptUtxo:   UTxO | UTxO[],
   redeemerHex:  string,
   lucid:        Lucid,
   compiledCode: string,
@@ -209,14 +209,16 @@ async function completeV3Tx(
   let task = (txObj as any).tasks.shift();
   while (task) { await task(txObj as any); task = (txObj as any).tasks.shift(); }
 
-  const cmlScriptUtxo = utxoToCml(scriptUtxo);
-  const redeemerData  = C.PlutusData.from_bytes(fromHex(redeemerHex));
-  txObj.txBuilder.add_input(
-    cmlScriptUtxo,
-    (C as any).ScriptWitness.new_plutus_witness(
-      C.PlutusWitness.new(redeemerData, undefined, undefined)
-    ),
-  );
+  const scriptUtxos = Array.isArray(scriptUtxo) ? scriptUtxo : [scriptUtxo];
+  const redeemerData = C.PlutusData.from_bytes(fromHex(redeemerHex));
+  for (const su of scriptUtxos) {
+    txObj.txBuilder.add_input(
+      utxoToCml(su),
+      (C as any).ScriptWitness.new_plutus_witness(
+        C.PlutusWitness.new(redeemerData, undefined, undefined)
+      ),
+    );
+  }
 
   const walletUtxos = await lucid.wallet.getUtxosCore();
   const collateral  = findCollateral(walletUtxos);
@@ -498,35 +500,26 @@ async function claimBackRentalUtxos(
     console.log('No rental UTxOs to claim back.');
     return;
   }
-  console.log(`\nClaiming back ${rentalUtxos.length} rental UTxO(s)...`);
+  console.log(`\nClaiming back ${rentalUtxos.length} rental UTxO(s) in one batch tx...`);
 
-  for (const utxo of rentalUtxos) {
-    try {
-      const datum = decodeDatum(utxo, lucid);
-      console.log(`  ${datum.nft_asset_name} → ${datum.owner.slice(0, 24)}…`);
+  const datums = rentalUtxos.map(u => decodeDatum(u, lucid));
+  datums.forEach(d => console.log(`  ${d.nft_asset_name} → ${d.owner.slice(0, 24)}…`));
 
-      // ClaimBack redeemer = Constr(2, []) (index 2 in RentalRedeemer enum).
-      // collectFrom + attachSpendingValidator register the script input with lucid's
-      // txBuilder so it appears in body.inputs. completeV3Tx then injects the V3
-      // witness set and corrects the fee/script_data_hash manually.
-      const redeemerHex = Data.to(new Constr(2, []));
-      const txObj = lucid
-        .newTx()
-        .collectFrom([utxo], redeemerHex)
-        .attachSpendingValidator({ type: 'PlutusV2', script: applyDoubleCborEncoding(compiledCode) })
-        .payToAddress(datum.owner, utxo.assets)
-        .addSigner(PROJECT_WALLET_ADDRESS)
-        .validFrom(Number(datum.draw_date) + 1000);
+  const maxDrawDate = datums.reduce((max, d) => d.draw_date > max ? d.draw_date : max, datums[0].draw_date);
 
-      const txHash = await completeV3Tx(txObj, utxo, redeemerHex, lucid, compiledCode);
-      console.log(`  Claimed! Tx: ${txHash}`);
-      // Wait for this tx to be indexed before building the next one — prevents
-      // the next tx from reusing UTxOs already spent by this claim-back.
-      await waitForTxConfirmed(txHash);
-    } catch (err) {
-      console.error(`  Failed (${utxo.txHash}#${utxo.outputIndex}):`, err);
-    }
+  const redeemerHex = Data.to(new Constr(2, []));
+  let txObj = lucid
+    .newTx()
+    .addSigner(PROJECT_WALLET_ADDRESS)
+    .validFrom(Number(maxDrawDate) + 1000);
+
+  for (let i = 0; i < rentalUtxos.length; i++) {
+    txObj = txObj.payToAddress(datums[i].owner, rentalUtxos[i].assets);
   }
+
+  const txHash = await completeV3Tx(txObj, rentalUtxos, redeemerHex, lucid, compiledCode);
+  console.log(`  Claimed! Tx: ${txHash}`);
+  await waitForTxConfirmed(txHash);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
