@@ -893,6 +893,7 @@ export default function DonadaPlatform() {
   const [drawPlanned, setDrawPlanned] = useState(false);
   // Canonical draw timestamp — retained after countdown expires so entropy is tied to draw time.
   const [scheduledDrawDate, setScheduledDrawDate] = useState<Date | null>(null);
+  const [lastWinnerAddress, setLastWinnerAddress] = useState<string | null>(null);
 
   // Wallet
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
@@ -1145,7 +1146,10 @@ export default function DonadaPlatform() {
         }
 
         const nextIncomplete = incomplete.find(r => r.date > now);
-        if (nextIncomplete) setNextDrawDate(nextIncomplete.date);
+        if (nextIncomplete) {
+          setNextDrawDate(nextIncomplete.date);
+          setLastWinnerAddress(null);
+        }
       } catch (err) {
         console.error('Failed to load draw dates', err);
       }
@@ -1609,6 +1613,7 @@ export default function DonadaPlatform() {
       log(`Winner source:  ${winner.source}`);
       log(`Winner address: ${winner.address}`);
       log(`Asset ID:       ${winner.assetId ?? '(none — wallet entry)'}`);
+      setLastWinnerAddress(winner.address);
 
       // ── Calculate payout ──────────────────────────────────────────────────────
       // Rental entry with an active renter → 90/10 split.
@@ -1860,12 +1865,23 @@ export default function DonadaPlatform() {
               <hr className="section-break" />
 
               <div className="info-block">
-                <p className="label">Countdown:</p>
-                <p className="value">
-                  {countdown
-                    ? `${countdown.days}D ${countdown.hours}H ${countdown.minutes}M ${countdown.seconds}S`
-                    : '00D 00H 00M 00S'}
-                </p>
+                {!countdown && lastWinnerAddress ? (
+                  <>
+                    <p className="label">Congratulations!</p>
+                    <p className="value" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
+                      {lastWinnerAddress.slice(0, 12)}…{lastWinnerAddress.slice(-6)}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="label">Countdown:</p>
+                    <p className="value">
+                      {countdown
+                        ? `${countdown.days}D ${countdown.hours}H ${countdown.minutes}M ${countdown.seconds}S`
+                        : '00D 00H 00M 00S'}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
 
