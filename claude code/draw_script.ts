@@ -572,7 +572,10 @@ async function main() {
 
   // Step 1 — Check draw date
   const scheduled = loadScheduledDraw();
-  if (!scheduled) throw new Error('No draw dates found in drawDates.csv.');
+  if (!scheduled) {
+    console.warn('No pending draw dates found in drawDates.csv — nothing to execute.');
+    process.exit(0);
+  }
 
   const now = new Date();
   if (scheduled.date > now) {
