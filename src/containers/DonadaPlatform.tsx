@@ -844,9 +844,21 @@ function stripCborTag258(bytes: Uint8Array): Uint8Array {
         else if (info === 26) copyN(4);
         else if (info === 27) copyN(8);
         break;
-      case 2: case 3: { const len = readLen(info, true); copyN(len); break; }
-      case 4: { const n = readLen(info, true); for (let j = 0; j < n; j++) walk(); break; }
-      case 5: { const n = readLen(info, true); for (let j = 0; j < n * 2; j++) walk(); break; }
+      case 2: case 3: {
+        if (info === 31) { while (bytes[i] !== 0xFF) walk(); out.push(0xFF); i++; }
+        else { const len = readLen(info, true); copyN(len); }
+        break;
+      }
+      case 4: {
+        if (info === 31) { while (bytes[i] !== 0xFF) walk(); out.push(0xFF); i++; }
+        else { const n = readLen(info, true); for (let j = 0; j < n; j++) walk(); }
+        break;
+      }
+      case 5: {
+        if (info === 31) { while (bytes[i] !== 0xFF) walk(); out.push(0xFF); i++; }
+        else { const n = readLen(info, true); for (let j = 0; j < n * 2; j++) walk(); }
+        break;
+      }
       case 7:
         if (info === 24) copyN(1);
         else if (info === 25) copyN(2);
