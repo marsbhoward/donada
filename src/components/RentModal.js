@@ -34,26 +34,6 @@ export default function RentModal({
     }
   }, [isOpen, nfts]);
 
-  // Keyboard navigation — arrow keys cycle carousel, Enter submits
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e) => {
-      // Don't hijack keys while typing in the price input
-      if (e.target.tagName === 'INPUT') return;
-      const total = sortedNfts.length;
-      if (e.key === 'ArrowLeft') {
-        setActiveIndex(i => (i - 1 + total) % total);
-      } else if (e.key === 'ArrowRight') {
-        setActiveIndex(i => (i + 1) % total);
-      } else if (e.key === 'Enter') {
-        const canConfirm = sortedNfts[activeIndex] && (mode !== 'list' || rentalPrice);
-        if (canConfirm) onConfirm({ nft: sortedNfts[activeIndex], rentalPrice });
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, sortedNfts, activeIndex, mode, rentalPrice, onConfirm]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Sorted NFT list (only applied in rent mode)
   const sortedNfts = useMemo(() => {
     if (mode !== 'rent' || !nfts.length) return nfts;
@@ -79,6 +59,25 @@ export default function RentModal({
     }
     return sorted;
   }, [nfts, sortBy, mode]);
+
+  // Keyboard navigation — arrow keys cycle carousel, Enter submits
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      const total = sortedNfts.length;
+      if (e.key === 'ArrowLeft') {
+        setActiveIndex(i => (i - 1 + total) % total);
+      } else if (e.key === 'ArrowRight') {
+        setActiveIndex(i => (i + 1) % total);
+      } else if (e.key === 'Enter') {
+        const canConfirm = sortedNfts[activeIndex] && (mode !== 'list' || rentalPrice);
+        if (canConfirm) onConfirm({ nft: sortedNfts[activeIndex], rentalPrice });
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, sortedNfts, activeIndex, mode, rentalPrice, onConfirm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const visibleItems = useMemo(() => {
     if (!sortedNfts.length) return [];
