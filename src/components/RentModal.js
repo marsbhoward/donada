@@ -214,13 +214,13 @@ export default function RentModal({
             )}
           </div>
         ) : (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', width: '100%' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%', flexWrap: 'nowrap' }}>
             {mode === 'cancel' ? (
               <p className="price-input" style={{ textAlign: 'center', margin: '0.5rem 0', flex: 1 }}>
                 NFT will be returned to your wallet
               </p>
             ) : (
-              <div style={{ position: 'relative', display: 'inline-block', flex: 1 }}>
+              <div style={{ position: 'relative', flex: '1 1 0', minWidth: 0 }}>
                 <span style={{
                   position: 'absolute', left: '0.6rem', top: '61%', transform: 'translateY(-50%)',
                   pointerEvents: 'none', userSelect: 'none', opacity: 0.6, fontSize: '1rem', lineHeight: 1
@@ -229,16 +229,19 @@ export default function RentModal({
                   className="price-input"
                   type="text"
                   inputMode="numeric"
-                  placeholder="Lowest rental price"
+                  placeholder="Rental price"
                   value={rentalPrice}
-                  onChange={(e) =>
-                    setRentalPrice(e.target.value.replace(/\D/g, ''))
-                  }
-                  style={{ paddingLeft: '1.6rem', width: '100%' }}
+                  onChange={(e) => setRentalPrice(e.target.value.replace(/\D/g, ''))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && sortedNfts[activeIndex] && rentalPrice) {
+                      onConfirm({ nft: sortedNfts[activeIndex], rentalPrice });
+                    }
+                  }}
+                  style={{ paddingLeft: '1.6rem', width: '100%', boxSizing: 'border-box' }}
                 />
               </div>
             )}
-            <div style={{ textAlign: 'right', whiteSpace: 'nowrap', opacity: 0.7, fontSize: '0.85rem' }}>
+            <div style={{ flexShrink: 0, textAlign: 'right', whiteSpace: 'nowrap', opacity: 0.7, fontSize: '0.85rem' }}>
               <div>Next draw</div>
               <div>{nextDrawDate ? nextDrawDate.toLocaleDateString() : '—'}</div>
             </div>
