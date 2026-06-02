@@ -28,12 +28,12 @@ code {
   top: 0px;
   padding: 10px 0px;
   font-size: 150%;
-  color: white;
+  color: inherit;
   font-weight: bold;
   text-align: center;
   grid-template-columns: 33.3vw 33.3vw 33.3vw;
 
-  background: black;
+  background: inherit;
 
     box-shadow: 5px 5px transparent,
     2px 2px transparent, 
