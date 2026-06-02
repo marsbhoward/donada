@@ -13,7 +13,7 @@
 //
 // Participant sources (mirrors the browser draw logic):
 //   1. On-chain rental UTxOs at the rental contract address
-//   2. public/data/nft_holders.csv     (address,asset_id)
+//   2. Live Blockfrost query — all wallets holding DONADA_POLICY_ID NFTs
 //   3. public/data/wallet_participants.csv  (address)
 //
 // Winner selection:
@@ -54,6 +54,7 @@ const BLOCKFROST_KEY = NETWORK === 'Preview'
   : (process.env.REACT_APP_BlockFrost_API_KEY_Mainnet ?? '');
 
 const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
+const DONADA_POLICY_ID       = '6c8b99e48576746aa1efa39cc952b3a66dfb76a9fcf82aaca5a1ab5c';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -472,18 +473,41 @@ function decodeDatum(utxo: UTxO, lucid: Lucid): RentalDatum {
 
 // ── CSV helpers ───────────────────────────────────────────────────────────────
 
-function loadNftHolders(): Array<{ address: string; assetId: string }> {
-  try {
-    const path = join(__dirname, '..', 'public', 'data', 'nft_holders.csv');
-    const seen = new Set<string>();
-    return readFileSync(path, 'utf-8').trim().split('\n').slice(1)
-      .map(l => {
-        const [address, assetId] = l.split(',').map(s => s.trim().replace(/^"|"$/g, ''));
-        return { address, assetId };
-      })
-      .filter(r => r.address && r.assetId)
-      .filter(r => { const k = `${r.address}:${r.assetId}`; if (seen.has(k)) return false; seen.add(k); return true; });
-  } catch { return []; }
+async function fetchLiveNftHolders(
+  excludeAddresses: Set<string>,
+): Promise<Array<{ address: string; assetId: string }>> {
+  // Paginate all assets under the policy
+  let assets: Array<{ asset: string }> = [];
+  for (let page = 1; ; page++) {
+    const pageData = await blockfrostGet<Array<{ asset: string }>>(
+      `/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`
+    );
+    assets = assets.concat(pageData);
+    if (pageData.length < 100) break;
+  }
+
+  const seen = new Set<string>();
+  const holders: Array<{ address: string; assetId: string }> = [];
+  for (const { asset } of assets) {
+    const assetId = toText(asset.slice(56));
+    let addresses: Array<{ address: string }> = [];
+    for (let page = 1; ; page++) {
+      const pageData = await blockfrostGet<Array<{ address: string }>>(
+        `/assets/${asset}/addresses?page=${page}&count=100`
+      );
+      addresses = addresses.concat(pageData);
+      if (pageData.length < 100) break;
+    }
+    for (const { address } of addresses) {
+      const key = `${address}:${assetId}`;
+      if (!excludeAddresses.has(address) && !seen.has(key)) {
+        seen.add(key);
+        holders.push({ address, assetId });
+      }
+    }
+  }
+  console.log(`Fetched ${holders.length} live NFT holder(s) from Blockfrost.`);
+  return holders;
 }
 
 function loadWalletParticipants(): string[] {
@@ -644,7 +668,9 @@ async function main() {
     } catch { return []; }
   });
 
-  const nftHolderParticipants: DrawParticipant[] = loadNftHolders().map(
+  const excludeFromHolders = new Set([contractAddress, PROJECT_WALLET_ADDRESS]);
+  const liveHolders = await fetchLiveNftHolders(excludeFromHolders);
+  const nftHolderParticipants: DrawParticipant[] = liveHolders.map(
     r => ({ source: 'nft_holder' as const, address: r.address, assetId: r.assetId })
   );
 
