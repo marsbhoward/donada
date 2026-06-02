@@ -1097,7 +1097,7 @@ export default function DonadaPlatform() {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await fetch('/data/drawDates.csv');
+        const res = await fetch(`/data/drawDates.csv?_=${Date.now()}`);
         const text = await res.text();
         const lines = text.trim().split('\n').slice(1);
         const now = new Date();
@@ -1155,6 +1155,8 @@ export default function DonadaPlatform() {
       }
     };
     load();
+    const poll = setInterval(load, 60_000);
+    return () => clearInterval(poll);
   }, []);
 
   // ----- Countdown ticker -----
