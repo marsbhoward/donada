@@ -371,7 +371,9 @@ function markDrawComplete(drawDate: Date): void {
   const updated = lines.map(line => {
     const parsed = parseCsvRowToUtc(line);
     if (parsed && parsed.date.getTime() === drawMs) {
-      return line.replace(/"n"/, '"y"');
+      const parts = line.split(',');
+      parts[3] = '"y"';
+      return parts.slice(0, 4).join(',');
     }
     return line;
   });
