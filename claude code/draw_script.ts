@@ -479,6 +479,26 @@ async function waitForTxConfirmed(txHash: string, maxWaitMs = 120_000): Promise<
   console.warn(`  Tx not confirmed within ${maxWaitMs / 1000}s — proceeding anyway`);
 }
 
+// Wait until a specific UTxO appears in Blockfrost's UTxO index for an address.
+// Blockfrost's /txs/{hash} endpoint can return 200 before /addresses/{addr}/utxos
+// reflects the new outputs — submitting a tx that spends a not-yet-indexed UTxO
+// causes BadInputsUTxO rejections even though the tx is technically confirmed.
+async function waitForUtxoIndexed(address: string, txHash: string, maxWaitMs = 180_000): Promise<void> {
+  const deadline = Date.now() + maxWaitMs;
+  console.log(`  Waiting for UTxO outputs of ${txHash.slice(0, 12)}… to be indexed...`);
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 15_000));
+    try {
+      const utxos = await blockfrostGet(`/addresses/${address}/utxos`) as Array<{ tx_hash: string }>;
+      if (utxos.some(u => u.tx_hash === txHash)) {
+        console.log(`  UTxOs indexed.`);
+        return;
+      }
+    } catch { /* address may have no UTxOs yet */ }
+  }
+  console.warn(`  UTxO index did not update within ${maxWaitMs / 1000}s — proceeding anyway`);
+}
+
 // ── ClaimBack helpers ─────────────────────────────────────────────────────────
 
 function loadCompiledCode(): string {
@@ -655,9 +675,12 @@ async function main() {
   // double payout if the cron fires again before the next draw is added.
   markDrawComplete(scheduled.date);
 
-  // Wait for the payout tx to be confirmed so the wallet UTXO set is fresh
-  // before ClaimBack tries to select collateral and fee inputs.
+  // Wait for the payout tx to be confirmed AND for its outputs to appear in
+  // Blockfrost's UTxO index. /txs/{hash} can return 200 before the UTxO index
+  // updates — submitting a claim-back tx that spends a not-yet-indexed change
+  // output causes BadInputsUTxO rejections from the node.
   await waitForTxConfirmed(txHash);
+  await waitForUtxoIndexed(PROJECT_WALLET_ADDRESS, txHash);
 
   // Step 8 — Return each rented NFT to its owner (10 min after draw_date)
   const compiledCode    = loadCompiledCode();

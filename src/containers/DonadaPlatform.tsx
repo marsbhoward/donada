@@ -1631,8 +1631,8 @@ export default function DonadaPlatform() {
       log('Waiting for payout to confirm before returning NFTs…');
       await waitForTxOnChain(txHash, blockfrostBase, blockfrostKey, log);
       // Allow Blockfrost UTxO index and wallet extension cache to settle after payout
-      log('Settling — waiting 15s before returning NFTs…');
-      await new Promise<void>(r => setTimeout(r, 15_000));
+      log('Settling — waiting 60s for UTxO index to update before returning NFTs…');
+      await new Promise<void>(r => setTimeout(r, 60_000));
       log('Returning rental NFTs to owners…');
       try {
         // Fresh lucid instance ensures clean Blockfrost UTxO state (not stale from payout tx)
