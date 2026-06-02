@@ -894,6 +894,8 @@ export default function DonadaPlatform() {
   // Canonical draw timestamp — retained after countdown expires so entropy is tied to draw time.
   const [scheduledDrawDate, setScheduledDrawDate] = useState<Date | null>(null);
   const [lastWinnerAddress, setLastWinnerAddress] = useState<string | null>(null);
+  const [lastWinnerDrawDate, setLastWinnerDrawDate] = useState<Date | null>(null);
+  const lastWinnerDrawDateRef = useRef<Date | null>(null);
 
   // Wallet
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
@@ -1153,7 +1155,14 @@ export default function DonadaPlatform() {
         const nextIncomplete = incomplete.find(r => r.date > now);
         if (nextIncomplete) {
           setNextDrawDate(nextIncomplete.date);
-          setLastWinnerAddress(null);
+          // Only clear winner if the new draw is on the same calendar day as the last draw.
+          const wdd = lastWinnerDrawDateRef.current;
+          const sameDay = !wdd || nextIncomplete.date.toLocaleDateString() === wdd.toLocaleDateString();
+          if (sameDay) {
+            setLastWinnerAddress(null);
+            setLastWinnerDrawDate(null);
+            lastWinnerDrawDateRef.current = null;
+          }
         }
 
         // ── winners.csv ──
@@ -1161,7 +1170,9 @@ export default function DonadaPlatform() {
         if (winLines.length > 0 && !nextIncomplete) {
           const lastWin = winLines[winLines.length - 1].split(',');
           const addr = lastWin[3]?.trim();
+          const date = parseTimeStr(lastWin[1]?.trim() ?? '', lastWin[2]?.trim() ?? '');
           if (addr) setLastWinnerAddress(addr);
+          if (date) { setLastWinnerDrawDate(date); lastWinnerDrawDateRef.current = date; }
         }
       } catch (err) {
         console.error('Failed to load draw dates', err);
@@ -1629,6 +1640,7 @@ export default function DonadaPlatform() {
       log(`Winner address: ${winner.address}`);
       log(`Asset ID:       ${winner.assetId ?? '(none — wallet entry)'}`);
       setLastWinnerAddress(winner.address);
+      if (scheduledDrawDate) { setLastWinnerDrawDate(scheduledDrawDate); lastWinnerDrawDateRef.current = scheduledDrawDate; }
 
       // ── Calculate payout ──────────────────────────────────────────────────────
       // Rental entry with an active renter → 90/10 split.
@@ -1880,7 +1892,7 @@ export default function DonadaPlatform() {
               <hr className="section-break" />
 
               <div className="info-block">
-                {!countdown && lastWinnerAddress ? (
+                {!countdown && lastWinnerAddress && (!lastWinnerDrawDate || new Date().toLocaleDateString() === lastWinnerDrawDate.toLocaleDateString()) ? (
                   <>
                     <p className="label">Congratulations!</p>
                     <p className="value" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
