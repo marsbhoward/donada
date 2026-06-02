@@ -555,6 +555,8 @@ function loadCompiledCode(): string {
   return validator.compiledCode as string;
 }
 
+const CLAIM_BACK_CHUNK_SIZE = 15;
+
 async function claimBackRentalUtxos(
   lucid:        Lucid,
   rentalUtxos:  UTxO[],
@@ -564,26 +566,39 @@ async function claimBackRentalUtxos(
     console.log('No rental UTxOs to claim back.');
     return;
   }
-  console.log(`\nClaiming back ${rentalUtxos.length} rental UTxO(s) in one batch tx...`);
 
-  const datums = rentalUtxos.map(u => decodeDatum(u, lucid));
-  datums.forEach(d => console.log(`  ${d.nft_asset_name} → ${d.owner.slice(0, 24)}…`));
-
-  const maxDrawDate = datums.reduce((max, d) => d.draw_date > max ? d.draw_date : max, datums[0].draw_date);
-
-  const redeemerHex = Data.to(new Constr(2, []));
-  let txObj = lucid
-    .newTx()
-    .addSigner(PROJECT_WALLET_ADDRESS)
-    .validFrom(Number(maxDrawDate) + 1000);
-
-  for (let i = 0; i < rentalUtxos.length; i++) {
-    txObj = txObj.payToAddress(datums[i].owner, rentalUtxos[i].assets);
+  const chunks: UTxO[][] = [];
+  for (let i = 0; i < rentalUtxos.length; i += CLAIM_BACK_CHUNK_SIZE) {
+    chunks.push(rentalUtxos.slice(i, i + CLAIM_BACK_CHUNK_SIZE));
   }
 
-  const txHash = await completeV3Tx(txObj, rentalUtxos, redeemerHex, lucid, compiledCode);
-  console.log(`  Claimed! Tx: ${txHash}`);
-  await waitForTxConfirmed(txHash);
+  console.log(`\nClaiming back ${rentalUtxos.length} rental UTxO(s) across ${chunks.length} tx(s)…`);
+
+  for (let c = 0; c < chunks.length; c++) {
+    const chunk = chunks[c];
+    console.log(`  Chunk ${c + 1}/${chunks.length}: ${chunk.length} UTxO(s)`);
+
+    const datums = chunk.map(u => decodeDatum(u, lucid));
+    datums.forEach(d => console.log(`    ${d.nft_asset_name} → ${d.owner.slice(0, 24)}…`));
+
+    const maxDrawDate = datums.reduce((max, d) => d.draw_date > max ? d.draw_date : max, datums[0].draw_date);
+
+    const redeemerHex = Data.to(new Constr(2, []));
+    let txObj = lucid
+      .newTx()
+      .addSigner(PROJECT_WALLET_ADDRESS)
+      .validFrom(Number(maxDrawDate) + 1000);
+
+    for (let i = 0; i < chunk.length; i++) {
+      txObj = txObj.payToAddress(datums[i].owner, chunk[i].assets);
+    }
+
+    const txHash = await completeV3Tx(txObj, chunk, redeemerHex, lucid, compiledCode);
+    console.log(`  Chunk ${c + 1} done. Tx: ${txHash}`);
+    await waitForTxConfirmed(txHash);
+    // Wait for UTxO index so the change output is spendable in the next chunk tx.
+    if (c < chunks.length - 1) await waitForUtxoIndexed(PROJECT_WALLET_ADDRESS, txHash);
+  }
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────

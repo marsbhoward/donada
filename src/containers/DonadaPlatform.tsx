@@ -661,6 +661,8 @@ async function waitForTxOnChain(
   throw new Error(`Tx ${txHash} not confirmed after 5 minutes.`);
 }
 
+const CLAIM_BACK_CHUNK_SIZE = 15;
+
 async function claimBackExpiredRentals(
   projectWalletAddress: string,
   validator: ValidatorSetup,
@@ -678,29 +680,43 @@ async function claimBackExpiredRentals(
 
   if (expired.length === 0) throw new Error('No expired rental UTxOs found at the contract address.');
 
-  onProgress(`Found ${expired.length} expired rental UTxO(s) — batching into one tx…`);
-
-  const datums = expired.map(u => decodeDatum(u, lucid));
-  datums.forEach(d => onProgress(`  Returning ${d.nft_asset_name}…`));
-
-  // validFrom must be after the latest draw_date so all claims are valid simultaneously
-  const maxDrawDate = datums.reduce((max, d) => d.draw_date > max ? d.draw_date : max, datums[0].draw_date);
-
-  const redeemerHex = Data.to(new Constr(2, [])); // ClaimBack = index 2
-  let txObj = lucid
-    .newTx()
-    .addSigner(projectWalletAddress)
-    .validFrom(Number(maxDrawDate) + 1000)
-    .validTo(Date.now() + 2 * 60 * 60 * 1000);
-
-  for (let i = 0; i < expired.length; i++) {
-    txObj = txObj.payToAddress(datums[i].owner, expired[i].assets);
+  const chunks: typeof expired[] = [];
+  for (let i = 0; i < expired.length; i += CLAIM_BACK_CHUNK_SIZE) {
+    chunks.push(expired.slice(i, i + CLAIM_BACK_CHUNK_SIZE));
   }
 
-  const txHash = await completeV3Tx(txObj, expired, redeemerHex, lucid, compiledCode);
-  onProgress(`Done: ${txHash.slice(0, 12)}…`);
+  onProgress(`Found ${expired.length} expired rental UTxO(s) — submitting ${chunks.length} tx(s)…`);
 
-  return [txHash];
+  const txHashes: string[] = [];
+
+  for (let c = 0; c < chunks.length; c++) {
+    const chunk = chunks[c];
+    if (chunks.length > 1) onProgress(`Tx ${c + 1}/${chunks.length}: returning ${chunk.length} NFT(s)…`);
+
+    const datums = chunk.map(u => decodeDatum(u, lucid));
+    datums.forEach(d => onProgress(`  Returning ${d.nft_asset_name}…`));
+
+    const maxDrawDate = datums.reduce((max, d) => d.draw_date > max ? d.draw_date : max, datums[0].draw_date);
+
+    const redeemerHex = Data.to(new Constr(2, []));
+    let txObj = lucid
+      .newTx()
+      .addSigner(projectWalletAddress)
+      .validFrom(Number(maxDrawDate) + 1000)
+      .validTo(Date.now() + 2 * 60 * 60 * 1000);
+
+    for (let i = 0; i < chunk.length; i++) {
+      txObj = txObj.payToAddress(datums[i].owner, chunk[i].assets);
+    }
+
+    const txHash = await completeV3Tx(txObj, chunk, redeemerHex, lucid, compiledCode);
+    txHashes.push(txHash);
+    onProgress(`Tx ${c + 1}/${chunks.length} done: ${txHash.slice(0, 12)}…`);
+    // Wait for confirmation before next chunk so the change output is spendable.
+    if (c < chunks.length - 1) await lucid.awaitTx(txHash);
+  }
+
+  return txHashes;
 }
 
 // Queries Blockfrost for all wallets holding any NFT under DONADA_POLICY_ID,
