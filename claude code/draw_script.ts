@@ -309,10 +309,26 @@ async function completeV3Tx(
 
 // ── Draw date check ───────────────────────────────────────────────────────────
 
-// CSV times are authored in Central Time. CDT (summer) = UTC-5, CST (winter) = UTC-6.
-const CST_OFFSET_HOURS = 5;
-
 const CSV_PATH = join(__dirname, '..', 'public', 'data', 'drawDates.csv');
+
+// Convert a Chicago local time to UTC, respecting DST automatically via Intl.
+// Tries CDT (UTC-5) then CST (UTC-6) and verifies via Intl.DateTimeFormat.
+function parseChicagoTime(year: number, month: number, day: number, hour: number, minute: number): Date {
+  for (const offsetHours of [5, 6]) {
+    const candidate = new Date(Date.UTC(year, month - 1, day, hour + offsetHours, minute));
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Chicago',
+      year: 'numeric', month: 'numeric', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', hour12: false,
+    }).formatToParts(candidate);
+    const get = (t: string) => parseInt(parts.find(p => p.type === t)?.value ?? '0');
+    if (get('year') === year && get('month') === month && get('day') === day &&
+        get('hour') % 24 === hour && get('minute') === minute) {
+      return candidate;
+    }
+  }
+  return new Date(Date.UTC(year, month - 1, day, hour + 5, minute)); // CDT fallback
+}
 
 function parseCsvRowToUtc(line: string): { date: Date; complete: boolean } | null {
   const [, dateStr, timeStr, completedRaw] = line.split(',');
@@ -325,8 +341,7 @@ function parseCsvRowToUtc(line: string): { date: Date; complete: boolean } | nul
   if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
   if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
   const complete = completedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
-  // Convert CST → UTC before constructing the Date
-  return { date: new Date(Date.UTC(year, month - 1, day, hour + CST_OFFSET_HOURS, minute)), complete };
+  return { date: parseChicagoTime(year, month, day, hour, minute), complete };
 }
 
 interface ScheduledDraw {
@@ -369,10 +384,17 @@ function markDrawComplete(drawDate: Date): void {
     execSync('git config user.name "GitHub Actions"',      { cwd: repoRoot });
     execSync('git add public/data/drawDates.csv',          { cwd: repoRoot });
     execSync(`git commit -m "Mark draw complete: ${drawDate.toISOString()}"`, { cwd: repoRoot });
-    execSync('git push',                                   { cwd: repoRoot });
+    try {
+      execSync('git push', { cwd: repoRoot });
+    } catch {
+      // Remote may have new commits (e.g. from a parallel cron run) — rebase and retry.
+      execSync('git pull --rebase', { cwd: repoRoot });
+      execSync('git push',          { cwd: repoRoot });
+    }
     console.log('CSV committed and pushed.');
   } catch (err) {
-    console.error('Failed to commit/push CSV update:', err);
+    // Push failed even after rebase — throw so the draw is not silently lost.
+    throw new Error(`Failed to commit/push draw-complete CSV: ${err}`);
   }
 }
 
@@ -608,7 +630,7 @@ async function main() {
   console.log(`Draw slot: ${drawSlot}`);
 
   let entropyBlock: { hash: string; slot: number } | null = null;
-  for (let s = drawSlot; s <= drawSlot + 200 && !entropyBlock; s++) {
+  for (let s = drawSlot; s <= drawSlot + 500 && !entropyBlock; s++) {
     try {
       entropyBlock = await blockfrostGet<{ hash: string; slot: number }>(`/blocks/slot/${s}`);
     } catch { /* empty slot — try next */ }
@@ -649,6 +671,14 @@ async function main() {
   const prizeLovelace = BigInt((process.env.PRIZE_LOVELACE ?? '').replace(/[^0-9]/g, '') || '0');
   if (prizeLovelace === 0n) throw new Error('PRIZE_LOVELACE env var not set or zero.');
 
+  // Pre-flight balance check — fail fast with a clear message rather than a
+  // cryptic Lucid error mid-tx if the wallet doesn't have enough ADA.
+  const walletUtxosForCheck = await lucid.wallet.getUtxos();
+  const walletBalance = walletUtxosForCheck.reduce((sum, u) => sum + (u.assets.lovelace ?? 0n), 0n);
+  if (walletBalance < prizeLovelace) {
+    throw new Error(`Insufficient wallet balance: ${walletBalance} lovelace available, ${prizeLovelace} required for prize.`);
+  }
+
   const activeRenter = winner.source === 'rental' ? (winner.rental.datum.renter ?? null) : null;
   const renterShare  = activeRenter ? prizeLovelace * 90n / 100n : 0n;
   const ownerShare   = prizeLovelace - renterShare;
@@ -682,10 +712,14 @@ async function main() {
   await waitForTxConfirmed(txHash);
   await waitForUtxoIndexed(PROJECT_WALLET_ADDRESS, txHash);
 
-  // Step 8 — Return each rented NFT to its owner (10 min after draw_date)
+  // Step 8 — Return each rented NFT to its owner.
+  // Only claim back UTxOs whose draw_date has passed — future-draw listings
+  // must stay on-chain and would cause the validator to reject the batch.
   const compiledCode    = loadCompiledCode();
+  const drawDateMs      = BigInt(scheduled.date.getTime());
   const rentalUtxosToReturn = rentalParticipants
     .filter((p): p is Extract<DrawParticipant, { source: 'rental' }> => p.source === 'rental')
+    .filter(p => p.rental.datum.draw_date <= drawDateMs)
     .map(p => p.rental.utxo);
   await claimBackRentalUtxos(lucid, rentalUtxosToReturn, compiledCode);
 }

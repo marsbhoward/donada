@@ -1101,8 +1101,22 @@ export default function DonadaPlatform() {
         const lines = text.trim().split('\n').slice(1);
         const now = new Date();
 
-        // CSV times are authored in Central Time. CDT (summer) = UTC-5, CST (winter) = UTC-6.
-        const CST_OFFSET_HOURS = 5;
+        // CSV times are authored in Central Time. Uses Intl to resolve the correct
+        // UTC offset for the specific date, handling CDT (UTC-5) and CST (UTC-6) automatically.
+        const parseChicagoTime = (y: number, mo: number, d: number, h: number, mi: number): Date => {
+          for (const offset of [5, 6]) {
+            const candidate = new Date(Date.UTC(y, mo - 1, d, h + offset, mi));
+            const parts = new Intl.DateTimeFormat('en-US', {
+              timeZone: 'America/Chicago',
+              year: 'numeric', month: 'numeric', day: 'numeric',
+              hour: 'numeric', minute: 'numeric', hour12: false,
+            }).formatToParts(candidate);
+            const get = (t: string) => parseInt(parts.find(p => p.type === t)?.value ?? '0');
+            if (get('year') === y && get('month') === mo && get('day') === d &&
+                get('hour') % 24 === h && get('minute') === mi) return candidate;
+          }
+          return new Date(Date.UTC(y, mo - 1, d, h + 5, mi)); // CDT fallback
+        };
         const parseRow = (line: string): { date: Date; complete: boolean } | null => {
           const [, dateStr, timeStr, completedRaw] = line.split(',');
           if (!dateStr || !timeStr) return null;
@@ -1114,8 +1128,7 @@ export default function DonadaPlatform() {
           if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
           if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
           const complete = completedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
-          // Convert CST → UTC before constructing the Date
-          return { date: new Date(Date.UTC(year, month - 1, day, hour + CST_OFFSET_HOURS, minute)), complete };
+          return { date: parseChicagoTime(year, month, day, hour, minute), complete };
         };
 
         // Only consider draws that have not been marked complete
