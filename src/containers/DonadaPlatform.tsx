@@ -896,6 +896,7 @@ export default function DonadaPlatform() {
   const [lastWinnerAddress, setLastWinnerAddress] = useState<string | null>(null);
   const [lastWinnerDrawDate, setLastWinnerDrawDate] = useState<Date | null>(null);
   const lastWinnerDrawDateRef = useRef<Date | null>(null);
+  const [drawDatesLoaded, setDrawDatesLoaded] = useState(false);
 
   // Wallet
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
@@ -1174,8 +1175,10 @@ export default function DonadaPlatform() {
           if (addr) setLastWinnerAddress(addr);
           if (date) { setLastWinnerDrawDate(date); lastWinnerDrawDateRef.current = date; }
         }
+        setDrawDatesLoaded(true);
       } catch (err) {
         console.error('Failed to load draw dates', err);
+        setDrawDatesLoaded(true);
       }
     };
     load();
@@ -1885,7 +1888,7 @@ export default function DonadaPlatform() {
                 <p className="value">
                   {nextDrawDate
                     ? nextDrawDate.toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' })
-                    : 'Loading...'}
+                    : drawDatesLoaded ? 'TBD' : 'Loading...'}
                 </p>
               </div>
 
