@@ -1,5 +1,5 @@
 // File: src/components/RentModal.jsx
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 function formatAda(lovelace) {
   return parseFloat((Number(lovelace) / 1_000_000).toFixed(2)).toString();
@@ -23,6 +23,8 @@ export default function RentModal({
   const [activeIndex, setActiveIndex] = useState(0);
   const [rentalPrice, setRentalPrice] = useState('');
   const [sortBy, setSortBy] = useState('price-asc');
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef({ startX: 0, dragging: false, wasDrag: false });
 
   // Reset state when modal opens or NFTs change
   useEffect(() => {
@@ -128,12 +130,40 @@ export default function RentModal({
         )}
 
         {visibleItems.length > 0 && (
-          <div className="carousel-centered">
+          <div
+            className="carousel-centered"
+            style={{ cursor: isDragging ? 'grabbing' : 'grab', touchAction: 'pan-y', userSelect: 'none' }}
+            onPointerDown={(e) => {
+              dragRef.current = { startX: e.clientX, dragging: true, wasDrag: false };
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!dragRef.current.dragging) return;
+              if (Math.abs(e.clientX - dragRef.current.startX) > 8) setIsDragging(true);
+            }}
+            onPointerUp={(e) => {
+              if (!dragRef.current.dragging) return;
+              const delta = e.clientX - dragRef.current.startX;
+              dragRef.current.dragging = false;
+              setIsDragging(false);
+              if (Math.abs(delta) < 30) return;
+              dragRef.current.wasDrag = true;
+              const total = sortedNfts.length;
+              setActiveIndex(i => delta < 0 ? (i + 1) % total : (i - 1 + total) % total);
+            }}
+            onPointerCancel={() => {
+              dragRef.current = { startX: 0, dragging: false, wasDrag: false };
+              setIsDragging(false);
+            }}
+          >
             {visibleItems.map(({ nft, index, position }) => (
               <div
                 key={position}
                 className={`carousel-frame ${position}`}
-                onClick={() => setActiveIndex(index)}
+                onClick={() => {
+                  if (dragRef.current.wasDrag) { dragRef.current.wasDrag = false; return; }
+                  setActiveIndex(index);
+                }}
               >
                 {nft.image ? (
                   <img
