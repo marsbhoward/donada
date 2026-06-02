@@ -1093,53 +1093,58 @@ export default function DonadaPlatform() {
     return () => { cancelled = true; };
   }, [fullWalletAddress, network]);
 
-  // ----- Load next draw date from CSV -----
+  // ----- Load next draw date and latest winner from CSVs -----
   useEffect(() => {
+    // CSV times are authored in Central Time. Uses Intl to resolve the correct
+    // UTC offset for the specific date, handling CDT (UTC-5) and CST (UTC-6) automatically.
+    const parseChicagoTime = (y: number, mo: number, d: number, h: number, mi: number): Date => {
+      for (const offset of [5, 6]) {
+        const candidate = new Date(Date.UTC(y, mo - 1, d, h + offset, mi));
+        const parts = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/Chicago',
+          year: 'numeric', month: 'numeric', day: 'numeric',
+          hour: 'numeric', minute: 'numeric', hour12: false,
+        }).formatToParts(candidate);
+        const get = (t: string) => parseInt(parts.find(p => p.type === t)?.value ?? '0');
+        if (get('year') === y && get('month') === mo && get('day') === d &&
+            get('hour') % 24 === h && get('minute') === mi) return candidate;
+      }
+      return new Date(Date.UTC(y, mo - 1, d, h + 5, mi)); // CDT fallback
+    };
+    const parseTimeStr = (dateStr: string, timeStr: string): Date | null => {
+      const [year, month, day] = dateStr.trim().split('-').map(Number);
+      const match = timeStr.trim().match(/(\d+):(\d+)(am|pm)/i);
+      if (!match) return null;
+      let hour = Number(match[1]);
+      const minute = Number(match[2]);
+      if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
+      if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
+      return parseChicagoTime(year, month, day, hour, minute);
+    };
+
     const load = async () => {
+      const bust = `_=${Date.now()}`;
       try {
-        const res = await fetch(`/data/drawDates.csv?_=${Date.now()}`);
-        const text = await res.text();
-        const lines = text.trim().split('\n').slice(1);
+        const [drawRes, winRes] = await Promise.all([
+          fetch(`/data/drawDates.csv?${bust}`),
+          fetch(`/data/winners.csv?${bust}`),
+        ]);
         const now = new Date();
 
-        // CSV times are authored in Central Time. Uses Intl to resolve the correct
-        // UTC offset for the specific date, handling CDT (UTC-5) and CST (UTC-6) automatically.
-        const parseChicagoTime = (y: number, mo: number, d: number, h: number, mi: number): Date => {
-          for (const offset of [5, 6]) {
-            const candidate = new Date(Date.UTC(y, mo - 1, d, h + offset, mi));
-            const parts = new Intl.DateTimeFormat('en-US', {
-              timeZone: 'America/Chicago',
-              year: 'numeric', month: 'numeric', day: 'numeric',
-              hour: 'numeric', minute: 'numeric', hour12: false,
-            }).formatToParts(candidate);
-            const get = (t: string) => parseInt(parts.find(p => p.type === t)?.value ?? '0');
-            if (get('year') === y && get('month') === mo && get('day') === d &&
-                get('hour') % 24 === h && get('minute') === mi) return candidate;
-          }
-          return new Date(Date.UTC(y, mo - 1, d, h + 5, mi)); // CDT fallback
-        };
-        const parseRow = (line: string): { date: Date; complete: boolean } | null => {
-          const [, dateStr, timeStr, completedRaw] = line.split(',');
-          if (!dateStr || !timeStr) return null;
-          const [year, month, day] = dateStr.trim().split('-').map(Number);
-          const match = timeStr.trim().match(/(\d+):(\d+)(am|pm)/i);
-          if (!match) return null;
-          let hour = Number(match[1]);
-          const minute = Number(match[2]);
-          if (match[3].toLowerCase() === 'pm' && hour !== 12) hour += 12;
-          if (match[3].toLowerCase() === 'am' && hour === 12) hour = 0;
-          const complete = completedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
-          return { date: parseChicagoTime(year, month, day, hour, minute), complete };
-        };
-
-        // Only consider draws that have not been marked complete
-        const incomplete = lines
-          .map(parseRow)
+        // ── drawDates.csv ──
+        const drawLines = (await drawRes.text()).trim().split('\n').slice(1);
+        const incomplete = drawLines
+          .map(line => {
+            const [, dateStr, timeStr, completedRaw] = line.split(',');
+            if (!dateStr || !timeStr) return null;
+            const date = parseTimeStr(dateStr, timeStr);
+            if (!date) return null;
+            const complete = completedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
+            return { date, complete };
+          })
           .filter((r): r is { date: Date; complete: boolean } => r !== null && !r.complete)
           .sort((a, b) => a.date.getTime() - b.date.getTime());
 
-        // scheduledDrawDate: earliest incomplete draw (past or future) — used for entropy.
-        // nextDrawDate: earliest incomplete future draw — used for countdown and datum.
         if (incomplete.length > 0) {
           setScheduledDrawDate(incomplete[0].date);
           setDrawPlanned(true);
@@ -1149,6 +1154,14 @@ export default function DonadaPlatform() {
         if (nextIncomplete) {
           setNextDrawDate(nextIncomplete.date);
           setLastWinnerAddress(null);
+        }
+
+        // ── winners.csv ──
+        const winLines = (await winRes.text()).trim().split('\n').slice(1).filter(Boolean);
+        if (winLines.length > 0 && !nextIncomplete) {
+          const lastWin = winLines[winLines.length - 1].split(',');
+          const addr = lastWin[3]?.trim();
+          if (addr) setLastWinnerAddress(addr);
         }
       } catch (err) {
         console.error('Failed to load draw dates', err);

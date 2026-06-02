@@ -309,7 +309,8 @@ async function completeV3Tx(
 
 // ── Draw date check ───────────────────────────────────────────────────────────
 
-const CSV_PATH = join(__dirname, '..', 'public', 'data', 'drawDates.csv');
+const CSV_PATH         = join(__dirname, '..', 'public', 'data', 'drawDates.csv');
+const WINNERS_CSV_PATH = join(__dirname, '..', 'public', 'data', 'winners.csv');
 
 // Convert a Chicago local time to UTC, respecting DST automatically via Intl.
 // Tries CDT (UTC-5) then CST (UTC-6) and verifies via Intl.DateTimeFormat.
@@ -363,12 +364,13 @@ function loadScheduledDraw(): ScheduledDraw | null {
   return incomplete[0] ?? null;
 }
 
-function markDrawComplete(drawDate: Date): void {
+function markDrawComplete(drawDate: Date, winnerAddress: string): void {
   const repoRoot = join(__dirname, '..');
-  const lines    = readFileSync(CSV_PATH, 'utf-8').split('\n');
   const drawMs   = drawDate.getTime();
 
-  const updated = lines.map(line => {
+  // Update drawDates.csv — mark the row complete.
+  const drawLines = readFileSync(CSV_PATH, 'utf-8').split('\n');
+  const updatedDraw = drawLines.map(line => {
     const parsed = parseCsvRowToUtc(line);
     if (parsed && parsed.date.getTime() === drawMs) {
       const parts = line.split(',');
@@ -377,14 +379,32 @@ function markDrawComplete(drawDate: Date): void {
     }
     return line;
   });
-
-  writeFileSync(CSV_PATH, updated.join('\n'));
+  writeFileSync(CSV_PATH, updatedDraw.join('\n'));
   console.log(`Marked draw ${drawDate.toISOString()} as complete in CSV.`);
+
+  // Append winner to winners.csv.
+  const drawRow = updatedDraw.find(line => {
+    const parsed = parseCsvRowToUtc(line);
+    return parsed && parsed.date.getTime() === drawMs;
+  });
+  const collection = drawRow ? drawRow.split(',')[0] : 'DONADA Test';
+  const [y, mo, d] = new Date(drawMs).toISOString().slice(0, 10).split('-');
+  const timeStr = (() => {
+    const h = new Date(drawMs).getUTCHours();
+    const m = new Date(drawMs).getUTCMinutes();
+    const period = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    return `${h12}:${String(m).padStart(2, '0')}${period}`;
+  })();
+  const winnerLine = `${collection},${y}-${mo}-${d},${timeStr},${winnerAddress}`;
+  const winnersContent = readFileSync(WINNERS_CSV_PATH, 'utf-8');
+  writeFileSync(WINNERS_CSV_PATH, winnersContent.trimEnd() + '\n' + winnerLine + '\n');
+  console.log(`Recorded winner ${winnerAddress} in winners.csv.`);
 
   try {
     execSync('git config user.email "actions@github.com"', { cwd: repoRoot });
     execSync('git config user.name "GitHub Actions"',      { cwd: repoRoot });
-    execSync('git add public/data/drawDates.csv',          { cwd: repoRoot });
+    execSync('git add public/data/drawDates.csv public/data/winners.csv', { cwd: repoRoot });
     execSync(`git commit -m "Mark draw complete: ${drawDate.toISOString()}"`, { cwd: repoRoot });
     try {
       execSync('git push', { cwd: repoRoot });
@@ -393,10 +413,10 @@ function markDrawComplete(drawDate: Date): void {
       execSync('git pull --rebase', { cwd: repoRoot });
       execSync('git push',          { cwd: repoRoot });
     }
-    console.log('CSV committed and pushed.');
+    console.log('CSVs committed and pushed.');
   } catch (err) {
     // Push failed even after rebase — throw so the draw is not silently lost.
-    throw new Error(`Failed to commit/push draw-complete CSV: ${err}`);
+    throw new Error(`Failed to commit/push draw-complete CSVs: ${err}`);
   }
 }
 
@@ -708,7 +728,7 @@ async function main() {
 
   // Mark this draw as complete in the CSV before ClaimBack — prevents
   // double payout if the cron fires again before the next draw is added.
-  markDrawComplete(scheduled.date);
+  markDrawComplete(scheduled.date, winner.address);
 
   // Wait for the payout tx to be confirmed AND for its outputs to appear in
   // Blockfrost's UTxO index. /txs/{hash} can return 200 before the UTxO index
