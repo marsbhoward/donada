@@ -905,7 +905,7 @@ const WALLET_BRAND_COLORS: Record<string, string> = {
 function getAvailableWallets(): WalletInfo[] {
   if (!window.cardano) return [];
   return Object.entries(window.cardano as Record<string, { enable?: unknown; name?: string; icon?: string }>)
-    .filter(([, w]) => w && w.enable)
+    .filter(([, w]) => w && typeof w.enable === 'function')
     .map(([key, w]) => ({ key, name: w.name || key, icon: w.icon || null }));
 }
 
@@ -990,7 +990,7 @@ export default function DonadaPlatform() {
   // Connected wallet's total raffle entries across all sources
   const [userEntries, setUserEntries] = useState<{
     listed: number; renting: number; participated: number; holding: number; total: number;
-    freeEntrySnapshotTaken: boolean; holdingSnapshotTaken: boolean;
+    freeEntrySnapshotTaken: boolean;
   } | null>(null);
   const [entriesExpanded, setEntriesExpanded] = useState(false);
 
@@ -1062,10 +1062,12 @@ export default function DonadaPlatform() {
         const lucid = await initLucid(network);
         const { contractAddress } = await loadRentalValidator(lucid);
         const utxos = await lucid.utxosAt(contractAddress);
-        const hasAny = utxos.some(u => {
+        const walletPayHash = lucid.utils.getAddressDetails(fullWalletAddress).paymentCredential?.hash;
+        const hasAny = walletPayHash != null && utxos.some(u => {
           try {
             const d = decodeDatum(u, lucid);
-            return d.owner === fullWalletAddress && d.renter === null;
+            const ownerPayHash = lucid.utils.getAddressDetails(d.owner).paymentCredential?.hash;
+            return ownerPayHash === walletPayHash && d.renter === null;
           } catch { return false; }
         });
         if (!cancelled) setHasActiveListings(hasAny);
@@ -1104,19 +1106,13 @@ export default function DonadaPlatform() {
           .filter(line => line.replace(/"/g, '').trim() === fullWalletAddress)
           .length;
 
-        // 4: nft_holders.csv — count rows matching this address
-        const nhRes = await fetch('/data/nft_holders.csv');
-        const nhText = await nhRes.text();
-        const nhRows = nhText.trim().split('\n').slice(1).filter(l => l.trim());
-        const holdingSnapshotTaken = nhRows.length > 0;
-        const holding = nhRows
-          .filter(line => {
-            const addr = line.split(',')[0].replace(/"/g, '').trim();
-            return addr === fullWalletAddress;
-          })
-          .length;
+        // 4: live wallet assets — count DONADA policy NFTs currently in wallet
+        const walletAssets = connectedWalletRef.current
+          ? await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets())
+          : [];
+        const holding = (walletAssets as NftAsset[]).filter(a => a.policyId === DONADA_POLICY_ID).length;
 
-        if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken, holdingSnapshotTaken });
+        if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken });
       } catch { if (!cancelled) setUserEntries(null); }
     };
 
@@ -1412,7 +1408,8 @@ export default function DonadaPlatform() {
         );
       });
       setListingTxHash(txHash);
-      setUserEntries(prev => prev ? { ...prev, listed: prev.listed + 1, total: prev.total + 1 } : prev);
+      setHasActiveListings(true);
+      setUserEntries(prev => prev ? { ...prev, listed: prev.listed + 1, holding: Math.max(0, prev.holding - 1), total: prev.total } : prev);
     } catch (err) {
       console.error('Failed to list NFT:', err);
       setListingError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
@@ -1495,6 +1492,12 @@ export default function DonadaPlatform() {
         setHasActiveListings(updated.length > 0);
         return updated;
       });
+      setUserEntries(prev => prev ? {
+        ...prev,
+        listed: Math.max(0, prev.listed - 1),
+        holding: prev.holding + 1,
+        total: prev.total,
+      } : prev);
     } catch (err) {
       console.error('Cancel failed:', err);
       setCancelError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
@@ -1894,7 +1897,7 @@ export default function DonadaPlatform() {
                     </div>
                     <div className="entries-row">
                       <span>Holding</span>
-                      <span>{!userEntries?.holdingSnapshotTaken ? '[no snapshot]' : (userEntries?.holding ?? '—')}</span>
+                      <span>{userEntries?.holding ?? '—'}</span>
                     </div>
                   </div>
                 </div>
