@@ -227,11 +227,19 @@ async function patchLucidV3CostModels(lucid: Lucid, network: Network): Promise<v
     .build();
 }
 
+let _lucidCacheNetwork: Network | null = null;
+let _lucidCachePromise: Promise<Lucid> | null = null;
+
 async function initLucid(network: Network): Promise<Lucid> {
-  const { url, apiKey } = blockfrostConfig(network);
-  const lucid = await Lucid.new(new ConwayCompatBlockfrost(url, apiKey), network);
-  await patchLucidV3CostModels(lucid, network);
-  return lucid;
+  if (_lucidCacheNetwork === network && _lucidCachePromise) return _lucidCachePromise;
+  _lucidCacheNetwork = network;
+  _lucidCachePromise = (async () => {
+    const { url, apiKey } = blockfrostConfig(network);
+    const lucid = await Lucid.new(new ConwayCompatBlockfrost(url, apiKey), network);
+    await patchLucidV3CostModels(lucid, network);
+    return lucid;
+  })();
+  return _lucidCachePromise;
 }
 
 // ── Datum helpers (shared by listing and rental flows) ────────────────────────
@@ -994,8 +1002,8 @@ export default function DonadaPlatform() {
   } | null>(null);
   const [entriesExpanded, setEntriesExpanded] = useState(false);
 
-  // Invalidate validator cache whenever the network changes so the address is re-derived
-  useEffect(() => { _validatorCache = null; }, [network]);
+  // Invalidate caches whenever the network changes so addresses are re-derived
+  useEffect(() => { _validatorCache = null; _lucidCachePromise = null; _lucidCacheNetwork = null; }, [network]);
 
   // ----- Fetch on-chain NFT stats -----
   useEffect(() => {
@@ -1084,10 +1092,19 @@ export default function DonadaPlatform() {
 
     const fetchEntries = async () => {
       try {
-        // 1 & 2: contract UTxOs — owner listings + active rentals
         const lucid = await initLucid(network);
         const { contractAddress } = await loadRentalValidator(lucid);
-        const utxos = await lucid.utxosAt(contractAddress);
+
+        // All three sources are independent — fetch in parallel
+        const [utxos, wpText, walletAssets] = await Promise.all([
+          lucid.utxosAt(contractAddress),
+          fetch('/data/wallet_participants.csv').then(r => r.text()),
+          connectedWalletRef.current
+            ? withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets())
+            : Promise.resolve([]),
+        ]);
+
+        // 1 & 2: contract UTxOs — owner listings + active rentals
         let listed = 0, renting = 0;
         for (const u of utxos) {
           try {
@@ -1097,19 +1114,14 @@ export default function DonadaPlatform() {
           } catch { /* skip malformed */ }
         }
 
-        // 3: wallet_participants.csv — count rows matching this address
-        const wpRes = await fetch('/data/wallet_participants.csv');
-        const wpText = await wpRes.text();
+        // 3: wallet_participants.csv
         const wpRows = wpText.trim().split('\n').slice(1).filter(l => l.trim());
         const freeEntrySnapshotTaken = wpRows.length > 0;
         const participated = wpRows
           .filter(line => line.replace(/"/g, '').trim() === fullWalletAddress)
           .length;
 
-        // 4: live wallet assets — count DONADA policy NFTs currently in wallet
-        const walletAssets = connectedWalletRef.current
-          ? await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets())
-          : [];
+        // 4: live wallet assets
         const holding = (walletAssets as NftAsset[]).filter(a => a.policyId === DONADA_POLICY_ID).length;
 
         if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken });
