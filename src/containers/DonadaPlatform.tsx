@@ -1105,56 +1105,61 @@ export default function DonadaPlatform() {
     let cancelled = false;
 
     const fetchEntries = async () => {
-      const lucid = await initLucid(network);
-      const { contractAddress } = await loadRentalValidator(lucid);
-      const { url: bfBase, apiKey: bfKey } = blockfrostConfig(network);
+      try {
+        const lucid = await initLucid(network);
+        const { contractAddress } = await loadRentalValidator(lucid);
+        const { url: bfBase, apiKey: bfKey } = blockfrostConfig(network);
 
-      // All three sources run in parallel; each fails independently
-      const [utxosResult, wpResult, holdingResult] = await Promise.allSettled([
-        lucid.utxosAt(contractAddress),
-        fetch('/data/wallet_participants.csv').then(r => r.text()),
-        // Try wallet API first; fall back to Blockfrost address query
-        (async (): Promise<number> => {
-          try {
-            if (connectedWalletRef.current) {
-              const assets = await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets());
-              return (assets as NftAsset[]).filter(a => a.policyId === DONADA_POLICY_ID).length;
-            }
-          } catch { /* fall through to Blockfrost */ }
-          const res = await fetch(
-            `${bfBase}/addresses/${fullWalletAddress}/assets`,
-            { headers: { project_id: bfKey } },
-          );
-          if (!res.ok) return 0;
-          const data: Array<{ unit: string }> = await res.json();
-          return data.filter(a => a.unit.startsWith(DONADA_POLICY_ID)).length;
-        })(),
-      ]);
+        // All three sources run in parallel; each fails independently
+        const [utxosResult, wpResult, holdingResult] = await Promise.allSettled([
+          lucid.utxosAt(contractAddress),
+          fetch('/data/wallet_participants.csv').then(r => r.text()),
+          (async (): Promise<number> => {
+            try {
+              if (connectedWalletRef.current) {
+                const assets = await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets());
+                return (assets as NftAsset[]).filter(a => a.policyId === DONADA_POLICY_ID).length;
+              }
+            } catch { /* fall through to Blockfrost */ }
+            const res = await fetch(
+              `${bfBase}/addresses/${fullWalletAddress}/assets`,
+              { headers: { project_id: bfKey } },
+            );
+            if (!res.ok) return 0;
+            const data: Array<{ unit: string }> = await res.json();
+            return data.filter(a => a.unit.startsWith(DONADA_POLICY_ID)).length;
+          })(),
+        ]);
 
-      // 1 & 2: contract UTxOs
-      let listed = 0, renting = 0;
-      if (utxosResult.status === 'fulfilled') {
-        for (const u of utxosResult.value) {
-          try {
-            const d = decodeDatum(u, lucid);
-            if (d.owner === fullWalletAddress) listed++;
-            if (d.renter === fullWalletAddress) renting++;
-          } catch { /* skip malformed */ }
+        // 1 & 2: contract UTxOs
+        let listed = 0, renting = 0;
+        if (utxosResult.status === 'fulfilled') {
+          for (const u of utxosResult.value) {
+            try {
+              const d = decodeDatum(u, lucid);
+              if (d.owner === fullWalletAddress) listed++;
+              if (d.renter === fullWalletAddress) renting++;
+            } catch { /* skip malformed */ }
+          }
         }
+
+        // 3: wallet_participants.csv
+        let participated = 0, freeEntrySnapshotTaken = false;
+        if (wpResult.status === 'fulfilled') {
+          const wpRows = wpResult.value.trim().split('\n').slice(1).filter(l => l.trim());
+          freeEntrySnapshotTaken = wpRows.length > 0;
+          participated = wpRows.filter(line => line.replace(/"/g, '').trim() === fullWalletAddress).length;
+        }
+
+        // 4: holding
+        const holding = holdingResult.status === 'fulfilled' ? holdingResult.value : 0;
+
+        if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken });
+      } catch (err) {
+        console.error('fetchEntries failed:', err);
+        notifyError({ action: 'Load Entries', wallet: fullWalletAddress, message: errMsg(err) });
+        if (!cancelled) setUserEntries({ listed: 0, renting: 0, participated: 0, holding: 0, total: 0, freeEntrySnapshotTaken: false });
       }
-
-      // 3: wallet_participants.csv
-      let participated = 0, freeEntrySnapshotTaken = false;
-      if (wpResult.status === 'fulfilled') {
-        const wpRows = wpResult.value.trim().split('\n').slice(1).filter(l => l.trim());
-        freeEntrySnapshotTaken = wpRows.length > 0;
-        participated = wpRows.filter(line => line.replace(/"/g, '').trim() === fullWalletAddress).length;
-      }
-
-      // 4: holding
-      const holding = holdingResult.status === 'fulfilled' ? holdingResult.value : 0;
-
-      if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken });
     };
 
     fetchEntries();
