@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import RentModal from '../components/RentModal';
 import { BrowserWallet } from '@meshsdk/core';
 import { fetchNftMetadata } from '../utils/nftMetadata';
+import { notifyListingCreated, notifyRentalConfirmed, notifyError } from '../utils/notifications';
 import { Lucid, Blockfrost, fromText, toText, Data, Constr, UTxO, C, fromHex, toHex, ProtocolParameters, applyDoubleCborEncoding } from 'lucid-cardano';
 
 // ── Contract constants ────────────────────────────────────────────────────────
@@ -894,6 +895,19 @@ function selectAndPatchWallet(lucid: Lucid, cip30Api: unknown): void {
   };
 }
 
+// Extracts a readable message from any thrown value, including CIP-30 APIError
+// objects ({ code: number, info: string }) that aren't Error instances.
+function errMsg(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object') {
+    const e = err as Record<string, unknown>;
+    if (typeof e.info === 'string' && e.info) return e.info;
+    if (typeof e.message === 'string' && e.message) return e.message;
+    try { return JSON.stringify(e); } catch { /* fall through */ }
+  }
+  return String(err);
+}
+
 // ── Wallet detection ──────────────────────────────────────────────────────────
 
 // Brand colours for common Cardano wallets — used as border/glow on hover.
@@ -1091,41 +1105,56 @@ export default function DonadaPlatform() {
     let cancelled = false;
 
     const fetchEntries = async () => {
-      try {
-        const lucid = await initLucid(network);
-        const { contractAddress } = await loadRentalValidator(lucid);
+      const lucid = await initLucid(network);
+      const { contractAddress } = await loadRentalValidator(lucid);
+      const { url: bfBase, apiKey: bfKey } = blockfrostConfig(network);
 
-        // All three sources are independent — fetch in parallel
-        const [utxos, wpText, walletAssets] = await Promise.all([
-          lucid.utxosAt(contractAddress),
-          fetch('/data/wallet_participants.csv').then(r => r.text()),
-          connectedWalletRef.current
-            ? withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets())
-            : Promise.resolve([]),
-        ]);
+      // All three sources run in parallel; each fails independently
+      const [utxosResult, wpResult, holdingResult] = await Promise.allSettled([
+        lucid.utxosAt(contractAddress),
+        fetch('/data/wallet_participants.csv').then(r => r.text()),
+        // Try wallet API first; fall back to Blockfrost address query
+        (async (): Promise<number> => {
+          try {
+            if (connectedWalletRef.current) {
+              const assets = await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets());
+              return (assets as NftAsset[]).filter(a => a.policyId === DONADA_POLICY_ID).length;
+            }
+          } catch { /* fall through to Blockfrost */ }
+          const res = await fetch(
+            `${bfBase}/addresses/${fullWalletAddress}/assets`,
+            { headers: { project_id: bfKey } },
+          );
+          if (!res.ok) return 0;
+          const data: Array<{ unit: string }> = await res.json();
+          return data.filter(a => a.unit.startsWith(DONADA_POLICY_ID)).length;
+        })(),
+      ]);
 
-        // 1 & 2: contract UTxOs — owner listings + active rentals
-        let listed = 0, renting = 0;
-        for (const u of utxos) {
+      // 1 & 2: contract UTxOs
+      let listed = 0, renting = 0;
+      if (utxosResult.status === 'fulfilled') {
+        for (const u of utxosResult.value) {
           try {
             const d = decodeDatum(u, lucid);
             if (d.owner === fullWalletAddress) listed++;
             if (d.renter === fullWalletAddress) renting++;
           } catch { /* skip malformed */ }
         }
+      }
 
-        // 3: wallet_participants.csv
-        const wpRows = wpText.trim().split('\n').slice(1).filter(l => l.trim());
-        const freeEntrySnapshotTaken = wpRows.length > 0;
-        const participated = wpRows
-          .filter(line => line.replace(/"/g, '').trim() === fullWalletAddress)
-          .length;
+      // 3: wallet_participants.csv
+      let participated = 0, freeEntrySnapshotTaken = false;
+      if (wpResult.status === 'fulfilled') {
+        const wpRows = wpResult.value.trim().split('\n').slice(1).filter(l => l.trim());
+        freeEntrySnapshotTaken = wpRows.length > 0;
+        participated = wpRows.filter(line => line.replace(/"/g, '').trim() === fullWalletAddress).length;
+      }
 
-        // 4: live wallet assets
-        const holding = (walletAssets as NftAsset[]).filter(a => a.policyId === DONADA_POLICY_ID).length;
+      // 4: holding
+      const holding = holdingResult.status === 'fulfilled' ? holdingResult.value : 0;
 
-        if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken });
-      } catch { if (!cancelled) setUserEntries(null); }
+      if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken });
     };
 
     fetchEntries();
@@ -1422,9 +1451,17 @@ export default function DonadaPlatform() {
       setListingTxHash(txHash);
       setHasActiveListings(true);
       setUserEntries(prev => prev ? { ...prev, listed: prev.listed + 1, holding: Math.max(0, prev.holding - 1), total: prev.total } : prev);
+      notifyListingCreated({
+        nftName: nft.name ?? nft.assetName,
+        price:   rentalPrice,
+        owner:   fullWalletAddress,
+        txHash,
+      });
     } catch (err) {
       console.error('Failed to list NFT:', err);
-      setListingError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
+      const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
+      setListingError(msg);
+      notifyError({ action: 'Create Listing', wallet: fullWalletAddress, message: msg });
     } finally {
       setIsListing(false);
     }
@@ -1447,9 +1484,18 @@ export default function DonadaPlatform() {
       });
       setRentTxHash(result.txHash);
       setUserEntries(prev => prev ? { ...prev, renting: prev.renting + 1, total: prev.total + 1 } : prev);
+      notifyRentalConfirmed({
+        nftName: nft.name ?? nft.assetName,
+        fee:     nft.rentalFee != null ? (Number(nft.rentalFee) / 1_000_000).toFixed(2) : '—',
+        renter:  fullWalletAddress,
+        owner:   '—',
+        txHash:  result.txHash,
+      });
     } catch (err) {
       console.error('Failed to rent NFT:', err);
-      setRentError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
+      const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
+      setRentError(msg);
+      notifyError({ action: 'Rent NFT', wallet: fullWalletAddress, message: msg });
     } finally {
       setIsRenting(false);
     }
@@ -1512,7 +1558,9 @@ export default function DonadaPlatform() {
       } : prev);
     } catch (err) {
       console.error('Cancel failed:', err);
-      setCancelError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : (err instanceof Error ? err.message : String(err)));
+      const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
+      setCancelError(msg);
+      notifyError({ action: 'Cancel Listing', wallet: fullWalletAddress ?? '—', message: msg });
     } finally {
       setIsCancelling(false);
     }
@@ -1800,7 +1848,7 @@ export default function DonadaPlatform() {
       const uniqueAddresses = new Set(holders.map(h => h.address)).size;
       setHolderPreview(`${holders.length} ticket(s) across ${uniqueAddresses} wallet(s)`);
     } catch (err) {
-      setHolderSyncError(err instanceof Error ? err.message : String(err));
+      setHolderSyncError(errMsg(err));
     } finally {
       setIsSyncingHolders(false);
     }
