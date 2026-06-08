@@ -1005,7 +1005,7 @@ export default function DonadaPlatform() {
   const [featuredNftImage, setFeaturedNftImage] = useState<string | null>(null);
 
   // Theme
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   const [isDimming, setIsDimming] = useState(false);
   const [signBtnAnim, setSignBtnAnim] = useState<'idle' | 'out' | 'in'>('idle');
 
