@@ -1292,8 +1292,18 @@ export default function DonadaPlatform() {
       const wallet = await BrowserWallet.enable(walletKey);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const api = await (window as any).cardano[walletKey].enable();
+
+      // getUsedAddresses() returns empty if the wallet has only received funds
+      // (no outgoing txs). Fall back to unused addresses then change address.
       const usedAddresses = await wallet.getUsedAddresses();
-      const fullAddress = usedAddresses?.[0] ?? null;
+      let fullAddress: string | null = usedAddresses?.[0] ?? null;
+      if (!fullAddress) {
+        const unused = await wallet.getUnusedAddresses();
+        fullAddress = unused?.[0] ?? null;
+      }
+      if (!fullAddress) {
+        fullAddress = await wallet.getChangeAddress();
+      }
 
       setConnectedWallet({ name: walletKey, wallet, api });
       setFullWalletAddress(fullAddress);
