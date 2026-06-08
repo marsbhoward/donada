@@ -49,3 +49,6 @@ jobs:
           REACT_APP_BlockFrost_API_KEY_Preview: ${{ secrets.BLOCKFROST_API_KEY_PREVIEW }}
           REACT_APP_BlockFrost_API_KEY_Mainnet: ${{ secrets.BLOCKFROST_API_KEY_MAINNET }}
           PRIZE_LOVELACE: ${{ secrets.PRIZE_LOVELACE }}
+          REACT_APP_EMAILJS_SERVICE_ID: ${{ secrets.EMAILJS_SERVICE_ID }}
+          REACT_APP_EMAILJS_TEMPLATE_ID: ${{ secrets.EMAILJS_TEMPLATE_ID }}
+          REACT_APP_EMAILJS_PUBLIC_KEY: ${{ secrets.EMAILJS_PUBLIC_KEY }}

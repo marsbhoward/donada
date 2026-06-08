@@ -56,6 +56,48 @@ const BLOCKFROST_KEY = NETWORK === 'Preview'
 const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
 const DONADA_POLICY_ID       = '6c8b99e48576746aa1efa39cc952b3a66dfb76a9fcf82aaca5a1ab5c';
 
+const EMAILJS_SERVICE_ID  = process.env.REACT_APP_EMAILJS_SERVICE_ID  ?? '';
+const EMAILJS_TEMPLATE_ID = process.env.REACT_APP_EMAILJS_TEMPLATE_ID ?? '';
+const EMAILJS_PUBLIC_KEY  = process.env.REACT_APP_EMAILJS_PUBLIC_KEY  ?? '';
+
+async function notifyDrawComplete(params: {
+  source:    string;
+  address:   string;
+  assetId:   string | null;
+  drawDate:  Date;
+  txHash:    string;
+}): Promise<void> {
+  if (!EMAILJS_SERVICE_ID || !EMAILJS_TEMPLATE_ID || !EMAILJS_PUBLIC_KEY) return;
+  const drawAt = params.drawDate.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  try {
+    const res = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        service_id:  EMAILJS_SERVICE_ID,
+        template_id: EMAILJS_TEMPLATE_ID,
+        user_id:     EMAILJS_PUBLIC_KEY,
+        template_params: {
+          to_email:   'donada.cnft@gmail.com',
+          event_type: 'Draw Complete',
+          subject:    `Draw Complete — ${drawAt}`,
+          details: [
+            `Draw Date:  ${drawAt}`,
+            `Method:     ${params.source}`,
+            `Winner:     ${params.address}`,
+            `Asset ID:   ${params.assetId ?? '(wallet entry — no asset)'}`,
+            `Tx Hash:    ${params.txHash}`,
+          ].join('\n'),
+        },
+      }),
+    });
+    if (!res.ok) console.warn(`EmailJS notification failed: ${res.status} ${await res.text()}`);
+    else console.log('Draw completion email sent.');
+  } catch (err) {
+    console.warn('EmailJS notification error:', err);
+  }
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface RentalDatum {
@@ -770,6 +812,13 @@ async function main() {
   // Mark this draw as complete in the CSV before ClaimBack — prevents
   // double payout if the cron fires again before the next draw is added.
   markDrawComplete(scheduled.date, winner.address);
+  await notifyDrawComplete({
+    source:   winner.source,
+    address:  winner.address,
+    assetId:  winner.assetId ?? null,
+    drawDate: scheduled.date,
+    txHash,
+  });
 
   // Wait for the payout tx to be confirmed AND for its outputs to appear in
   // Blockfrost's UTxO index. /txs/{hash} can return 200 before the UTxO index
