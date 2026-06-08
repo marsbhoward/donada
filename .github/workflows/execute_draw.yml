@@ -5,9 +5,12 @@ env:
 
 on:
   schedule:
-    # Runs every 5 minutes. draw_script.ts self-guards using drawDates.csv —
+    # Runs every 15 minutes. draw_script.ts self-guards using drawDates.csv —
     # it exits immediately if the scheduled draw time has not been reached yet.
-    - cron: '*/5 * * * *'
+    # Note: GitHub Actions cron is best-effort — runs may be delayed up to
+    # several minutes during high load. The draw will execute on the first
+    # run that fires after the scheduled draw time.
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     # Manual trigger from the GitHub Actions UI (useful for testing).
     inputs:
