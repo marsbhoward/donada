@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import RentModal from '../components/RentModal';
 import { BrowserWallet } from '@meshsdk/core';
 import { fetchNftMetadata } from '../utils/nftMetadata';
-import { notifyListingCreated, notifyRentalConfirmed, notifyError } from '../utils/notifications';
+import { notifyListingCreated, notifyRentalConfirmed } from '../utils/notifications';
 import { Lucid, Blockfrost, fromText, toText, Data, Constr, UTxO, C, fromHex, toHex, ProtocolParameters, applyDoubleCborEncoding } from 'lucid-cardano';
 
 // ── Contract constants ────────────────────────────────────────────────────────
@@ -1157,7 +1157,6 @@ export default function DonadaPlatform() {
         if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken });
       } catch (err) {
         console.error('fetchEntries failed:', err);
-        notifyError({ action: 'Load Entries', wallet: fullWalletAddress, message: errMsg(err) });
         if (!cancelled) setUserEntries({ listed: 0, renting: 0, participated: 0, holding: 0, total: 0, freeEntrySnapshotTaken: false });
       }
     };
@@ -1476,7 +1475,6 @@ export default function DonadaPlatform() {
       console.error('Failed to list NFT:', err);
       const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
       setListingError(msg);
-      notifyError({ action: 'Create Listing', wallet: fullWalletAddress, message: msg });
     } finally {
       setIsListing(false);
     }
@@ -1510,7 +1508,6 @@ export default function DonadaPlatform() {
       console.error('Failed to rent NFT:', err);
       const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
       setRentError(msg);
-      notifyError({ action: 'Rent NFT', wallet: fullWalletAddress, message: msg });
     } finally {
       setIsRenting(false);
     }
@@ -1575,7 +1572,6 @@ export default function DonadaPlatform() {
       console.error('Cancel failed:', err);
       const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
       setCancelError(msg);
-      notifyError({ action: 'Cancel Listing', wallet: fullWalletAddress ?? '—', message: msg });
     } finally {
       setIsCancelling(false);
     }

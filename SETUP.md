@@ -8,6 +8,8 @@ Create a `.env` file in the project root (never commit this file):
 REACT_APP_BlockFrost_API_KEY_Preview=your_blockfrost_preview_key
 REACT_APP_BlockFrost_API_KEY_Mainnet=your_blockfrost_mainnet_key
 BLOCKFROST_IPFS_KEY=your_blockfrost_ipfs_key
+REACT_APP_SENTRY_DSN=your_sentry_dsn
+REACT_APP_SENTRY_ENV=development
 REACT_APP_EMAILJS_SERVICE_ID=your_emailjs_service_id
 REACT_APP_EMAILJS_TEMPLATE_ID=your_emailjs_template_id
 REACT_APP_EMAILJS_PUBLIC_KEY=your_emailjs_public_key

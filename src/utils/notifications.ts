@@ -6,7 +6,7 @@ const PUBLIC_KEY  = process.env.REACT_APP_EMAILJS_PUBLIC_KEY  ?? '';
 
 const TO_EMAIL = 'donada.cnft@gmail.com';
 
-type EventType = 'Rental Listing' | 'Rental Confirmed' | 'Error';
+type EventType = 'Rental Listing' | 'Rental Confirmed';
 
 interface NotifyParams {
   eventType: EventType;
@@ -34,10 +34,10 @@ async function sendNotification({ eventType, subject, details }: NotifyParams): 
 }
 
 export function notifyListingCreated(params: {
-  nftName:    string;
-  price:      string;
-  owner:      string;
-  txHash:     string;
+  nftName: string;
+  price:   string;
+  owner:   string;
+  txHash:  string;
 }): Promise<void> {
   return sendNotification({
     eventType: 'Rental Listing',
@@ -52,11 +52,11 @@ export function notifyListingCreated(params: {
 }
 
 export function notifyRentalConfirmed(params: {
-  nftName:  string;
-  fee:      string;
-  renter:   string;
-  owner:    string;
-  txHash:   string;
+  nftName: string;
+  fee:     string;
+  renter:  string;
+  owner:   string;
+  txHash:  string;
 }): Promise<void> {
   return sendNotification({
     eventType: 'Rental Confirmed',
@@ -67,22 +67,6 @@ export function notifyRentalConfirmed(params: {
       `Renter: ${params.renter}`,
       `Owner:  ${params.owner}`,
       `Tx:     ${params.txHash}`,
-    ].join('\n'),
-  });
-}
-
-export function notifyError(params: {
-  action:  string;
-  wallet:  string;
-  message: string;
-}): Promise<void> {
-  return sendNotification({
-    eventType: 'Error',
-    subject:   `Error — ${params.action}`,
-    details: [
-      `Action:  ${params.action}`,
-      `Wallet:  ${params.wallet}`,
-      `Message: ${params.message}`,
     ].join('\n'),
   });
 }
