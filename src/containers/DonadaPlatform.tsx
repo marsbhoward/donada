@@ -1465,6 +1465,7 @@ export default function DonadaPlatform() {
       });
       setTxConfirm({ title: 'Listing Created!', txHash });
       setHasActiveListings(true);
+      setNftStats(prev => prev ? { ...prev, openRentals: prev.openRentals + 1 } : prev);
       setUserEntries(prev => prev ? { ...prev, listed: prev.listed + 1, holding: Math.max(0, prev.holding - 1), total: prev.total } : prev);
       notifyListingCreated({
         nftName: nft.name ?? nft.assetName,
@@ -1496,6 +1497,7 @@ export default function DonadaPlatform() {
         return rentNft(nft.assetName, fullWalletAddress, validator, lucid);
       });
       setTxConfirm({ title: 'NFT Rented!', txHash: result.txHash });
+      setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - 1) } : prev);
       setUserEntries(prev => prev ? { ...prev, renting: prev.renting + 1, total: prev.total + 1 } : prev);
       notifyRentalConfirmed({
         nftName: nft.name ?? nft.assetName,
@@ -1556,6 +1558,7 @@ export default function DonadaPlatform() {
         return cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
       });
       setTxConfirm({ title: 'Listing Cancelled!', txHash: result.txHash });
+      setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - 1) } : prev);
       setCancelNfts(prev => {
         const updated = prev.filter(n => n.assetName !== nft.assetName);
         setHasActiveListings(updated.length > 0);
