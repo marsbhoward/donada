@@ -249,7 +249,7 @@ box-sizing: border-box;
 width:100%;
 max-width: 880px;
 border-radius:0;
-padding: clamp(10px, 2.5vw, 28px) 28px 28px;
+padding: 0 28px 28px;
 display: flex;
 flex-direction: column;
 gap: clamp(10px, 2.5vw, 28px);
@@ -527,7 +527,7 @@ box-sizing: border-box;
 width:100%;
 max-width: 880px;
 border-radius:0;
-padding: clamp(10px, 2.5vw, 28px) 28px 28px;
+padding: 0 28px 28px;
 display: flex;
 flex-direction: column;
 gap: clamp(10px, 2.5vw, 28px);
@@ -957,7 +957,7 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 @media (max-width: 520px) {
   /* Reduce card padding so action rows have more room */
   .nft-card {
-    padding: clamp(10px, 2.5vw, 28px) 16px 14px;
+    padding: 0 16px 14px;
   }
 
   /* Shrink the image to ~50vw tall so it's compact but still visible */
