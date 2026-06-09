@@ -247,7 +247,7 @@ box-sizing: border-box;
 width:100%;
 max-width: 880px;
 border-radius:0;
-padding: 28px;
+padding: 0 28px 28px;
 background: var(--bg-page);
 border-left: 1px solid var(--border-subtle);
 border-right: 1px solid var(--border-subtle);
@@ -520,7 +520,7 @@ box-sizing: border-box;
 width:100%;
 max-width: 880px;
 border-radius:0;
-padding: 28px;
+padding: 0 28px 28px;
 background: var(--bg-page);
 border-left: 1px solid var(--border-subtle);
 border-right: 1px solid var(--border-subtle);
@@ -619,7 +619,7 @@ margin:4px 0;
 
 
 .info-sections{
-margin-top: 28px;
+margin-top: clamp(10px, 2.5vw, 28px);
 display:flex;
 gap: 24px;
 align-items:center;
@@ -740,7 +740,7 @@ margin:4px 0;
 
 
 .info-sections{
-margin-top: 28px;
+margin-top: clamp(10px, 2.5vw, 28px);
 display:flex;
 gap: 24px;
 align-items:center;
@@ -949,7 +949,7 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 @media (max-width: 520px) {
   /* Reduce card padding so action rows have more room */
   .nft-card {
-    padding: 14px 16px;
+    padding: 0 16px 14px;
   }
 
   /* Shrink the image to ~50vw tall so it's compact but still visible */
@@ -960,7 +960,6 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
   /* Tighten section spacing */
   .info-sections {
-    margin-top: 12px;
     gap: 10px;
   }
 
@@ -986,6 +985,7 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   display: flex;
   gap: 20px;
   align-items: stretch;
+  margin-top: clamp(10px, 2.5vw, 28px);
 }
 
 /* Image takes remaining space; panel has a fixed width */
@@ -1200,7 +1200,6 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   .info-sections {
     flex-direction: row;
     align-items: stretch; /* both columns same total height */
-    margin-top: 8px;
     gap: 12px;
   }
 
