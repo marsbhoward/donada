@@ -1527,3 +1527,54 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
 .dark-mode .sort-btn { border-color: rgba(255,255,255,0.2); }
 .dark-mode .sort-btn.active { border-color: rgba(255,255,255,0.7); }
+
+/* ── Tx confirmation modal ──────────────────────────────────────────────── */
+.tx-confirm-modal {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 2rem 1.75rem 1.5rem;
+  max-width: 340px;
+  width: 90vw;
+}
+
+.tx-confirm-icon {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 50%;
+  background: #22c55e;
+  color: #fff;
+  font-size: 1.5rem;
+  line-height: 3rem;
+  margin-bottom: 0.75rem;
+}
+
+.tx-confirm-title {
+  margin: 0 0 1rem;
+  font-size: 1.15rem;
+}
+
+.tx-confirm-hash-label {
+  font-size: 0.7rem;
+  opacity: 0.5;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.25rem;
+}
+
+.tx-confirm-hash {
+  font-family: monospace;
+  font-size: 0.85rem;
+  word-break: break-all;
+  margin-bottom: 0.75rem;
+  opacity: 0.8;
+}
+
+.tx-confirm-link {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  opacity: 0.6;
+  text-decoration: underline;
+}
+.tx-confirm-link:hover { opacity: 1; }

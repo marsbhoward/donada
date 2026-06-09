@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import React, { useState, useEffect, useRef } from 'react';
 import RentModal from '../components/RentModal';
+import TxConfirmModal from '../components/TxConfirmModal';
 import { BrowserWallet } from '@meshsdk/core';
 import { fetchNftMetadata } from '../utils/nftMetadata';
 import { notifyListingCreated, notifyRentalConfirmed } from '../utils/notifications';
@@ -962,14 +963,12 @@ export default function DonadaPlatform() {
   const [ownedNfts, setOwnedNfts] = useState<NftAsset[]>([]);
   const [loadingOwnedNfts, setLoadingOwnedNfts] = useState(false);
   const [isListing, setIsListing] = useState(false);
-  const [listingTxHash, setListingTxHash] = useState<string | null>(null);
   const [listingError, setListingError] = useState<string | null>(null);
 
   // Renter flow
   const [listedNfts, setListedNfts] = useState<NftAsset[]>([]);
   const [loadingListedNfts, setLoadingListedNfts] = useState(false);
   const [isRenting, setIsRenting] = useState(false);
-  const [rentTxHash, setRentTxHash] = useState<string | null>(null);
   const [rentError, setRentError] = useState<string | null>(null);
 
   // Cancel listing flow
@@ -977,7 +976,6 @@ export default function DonadaPlatform() {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [loadingCancelListings, setLoadingCancelListings] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
-  const [cancelTxHash, setCancelTxHash] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
   // Whether the connected wallet owns any un-rented listings (controls section visibility)
   const [hasActiveListings, setHasActiveListings] = useState(false);
@@ -985,8 +983,10 @@ export default function DonadaPlatform() {
   // Admin draw flow (only shown when project wallet is connected)
   const [drawPrizeAda, setDrawPrizeAda] = useState('');
   const [isDrawing, setIsDrawing] = useState(false);
-  const [drawTxHash, setDrawTxHash] = useState<string | null>(null);
   const [drawError, setDrawError] = useState<string | null>(null);
+
+  // Tx confirmation modal
+  const [txConfirm, setTxConfirm] = useState<{ title: string; txHash: string } | null>(null);
   const [drawLog, setDrawLog] = useState<string[]>([]);
 
   // Admin claim-back flow
@@ -1445,7 +1445,6 @@ export default function DonadaPlatform() {
     if (!fullWalletAddress || !nextDrawDate || !connectedWallet) return;
     closeModal();
     setIsListing(true);
-    setListingTxHash(null);
     setListingError(null);
 
     try {
@@ -1462,7 +1461,7 @@ export default function DonadaPlatform() {
           lucid
         );
       });
-      setListingTxHash(txHash);
+      setTxConfirm({ title: 'Listing Created!', txHash });
       setHasActiveListings(true);
       setUserEntries(prev => prev ? { ...prev, listed: prev.listed + 1, holding: Math.max(0, prev.holding - 1), total: prev.total } : prev);
       notifyListingCreated({
@@ -1485,7 +1484,6 @@ export default function DonadaPlatform() {
     if (!fullWalletAddress || !connectedWallet) return;
     closeModal();
     setIsRenting(true);
-    setRentTxHash(null);
     setRentError(null);
 
     try {
@@ -1495,7 +1493,7 @@ export default function DonadaPlatform() {
         const validator = await loadRentalValidator(lucid);
         return rentNft(nft.assetName, fullWalletAddress, validator, lucid);
       });
-      setRentTxHash(result.txHash);
+      setTxConfirm({ title: 'NFT Rented!', txHash: result.txHash });
       setUserEntries(prev => prev ? { ...prev, renting: prev.renting + 1, total: prev.total + 1 } : prev);
       notifyRentalConfirmed({
         nftName: nft.name ?? nft.assetName,
@@ -1547,7 +1545,6 @@ export default function DonadaPlatform() {
     if (!fullWalletAddress || !connectedWallet) return;
     setShowCancelModal(false);
     setIsCancelling(true);
-    setCancelTxHash(null);
     setCancelError(null);
     try {
       const result = await withWalletRetry(async () => {
@@ -1556,7 +1553,7 @@ export default function DonadaPlatform() {
         const validator = await loadRentalValidator(lucid);
         return cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
       });
-      setCancelTxHash(result.txHash);
+      setTxConfirm({ title: 'Listing Cancelled!', txHash: result.txHash });
       setCancelNfts(prev => {
         const updated = prev.filter(n => n.assetName !== nft.assetName);
         setHasActiveListings(updated.length > 0);
@@ -1586,7 +1583,6 @@ export default function DonadaPlatform() {
       return;
     }
     setIsDrawing(true);
-    setDrawTxHash(null);
     setDrawError(null);
     setDrawLog([]);
 
@@ -1774,7 +1770,7 @@ export default function DonadaPlatform() {
       const txHash = await signed.submit();
 
       log(`Done! Payout tx: ${txHash}`);
-      setDrawTxHash(txHash);
+      setTxConfirm({ title: 'Draw Complete!', txHash });
 
       // Automatically return NFTs to owners for all expired rental UTxOs,
       // regardless of whether they had an active renter.
@@ -2029,13 +2025,6 @@ export default function DonadaPlatform() {
                 </button>
               </div>
 
-              {rentTxHash && (
-                <div className="action-block">
-                  <div className="action-text" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
-                    Rented! Tx: {rentTxHash.slice(0, 12)}…
-                  </div>
-                </div>
-              )}
               {rentError && (
                 <div className="action-block">
                   <div className="action-text" style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
@@ -2057,13 +2046,6 @@ export default function DonadaPlatform() {
                 </button>
               </div>
 
-              {listingTxHash && (
-                <div className="action-block">
-                  <div className="action-text" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
-                    Listed! Tx: {listingTxHash.slice(0, 12)}…
-                  </div>
-                </div>
-              )}
               {listingError && (
                 <div className="action-block">
                   <div className="action-text" style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
@@ -2087,13 +2069,6 @@ export default function DonadaPlatform() {
                     </button>
                   </div>
 
-                  {cancelTxHash && (
-                    <div className="action-block">
-                      <div className="action-text" style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
-                        Cancelled! Tx: {cancelTxHash.slice(0, 12)}…
-                      </div>
-                    </div>
-                  )}
                   {cancelError && (
                     <div className="action-block">
                       <div className="action-text" style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
@@ -2147,11 +2122,6 @@ export default function DonadaPlatform() {
             <div style={{ fontSize: '0.75rem', marginTop: '0.5rem' }}>
               {drawLog.map((line, i) => <div key={i}>{line}</div>)}
             </div>
-          )}
-          {drawTxHash && (
-            <p style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>
-              Done! Tx: {drawTxHash.slice(0, 12)}…
-            </p>
           )}
           {drawError && (
             <p style={{ fontSize: '0.75rem', color: 'red', wordBreak: 'break-all' }}>
@@ -2224,6 +2194,13 @@ export default function DonadaPlatform() {
         onClose={() => setShowCancelModal(false)}
         onConfirm={handleCancelNft}
         nextDrawDate={nextDrawDate as any}
+      />
+
+      <TxConfirmModal
+        title={txConfirm?.title ?? ''}
+        txHash={txConfirm?.txHash ?? null}
+        network={network}
+        onClose={() => setTxConfirm(null)}
       />
     </div>
   );
