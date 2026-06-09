@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import RentModal from '../components/RentModal';
 import TxConfirmModal from '../components/TxConfirmModal';
 import { BrowserWallet } from '@meshsdk/core';
@@ -935,6 +935,8 @@ function getAvailableWallets(): WalletInfo[] {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DonadaPlatform() {
+  const logoHue = useMemo(() => Math.floor(Math.random() * 360), []);
+
   // Network (toggled in admin panel; defaults to Preview for testnet)
   const [network, setNetwork] = useState<Network>('Preview');
 
@@ -1869,7 +1871,10 @@ export default function DonadaPlatform() {
         <div className="logo-group">
           <h1 className="logo">
             <a href="https://donada.io" target="_blank" rel="noopener noreferrer">
-              DONADA
+              DON
+              <span style={{ color: `hsl(${logoHue},85%,52%)` }}>A</span>
+              <span style={{ color: `hsl(${logoHue},68%,65%)` }}>D</span>
+              <span style={{ color: `hsl(${logoHue},50%,77%)` }}>A</span>
             </a>
           </h1>
           <button className="theme-toggle" onClick={() => {
