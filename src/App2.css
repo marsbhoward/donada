@@ -18,6 +18,8 @@ line-height: 150%;
 background: var(--bg-page);
 color: var(--text-primary);
 min-height: 100vh;
+display: flex;
+flex-direction: column;
 }
 
 
@@ -293,6 +295,8 @@ line-height: 150%;
 background: var(--bg-page);
 color: var(--text-primary);
 min-height: 100vh;
+display: flex;
+flex-direction: column;
 }
 
 
@@ -1438,6 +1442,7 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
 /* main-content fills remaining height and centers the card */
 .main-content {
+  flex: 1;
   display: flex !important;
   align-items: center !important;
 }
