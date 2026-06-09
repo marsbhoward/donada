@@ -1872,7 +1872,7 @@ export default function DonadaPlatform() {
           <h1 className="logo">
             <a href="https://donada.io" target="_blank" rel="noopener noreferrer">
               DON
-              <span style={{ color: `hsl(${logoHue},90%,48%)` }}>A</span>DA
+              <span style={{ color: 'transparent', WebkitTextStroke: `1px hsl(${logoHue},90%,48%)` }}>ADA</span>
             </a>
           </h1>
           <button className="theme-toggle" onClick={() => {
