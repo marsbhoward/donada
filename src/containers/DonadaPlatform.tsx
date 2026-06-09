@@ -1527,13 +1527,21 @@ export default function DonadaPlatform() {
       selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
       const { contractAddress } = await loadRentalValidator(lucid);
       const utxos = await lucid.utxosAt(contractAddress);
-      const owned = utxos.flatMap(u => {
+      const raw = utxos.flatMap(u => {
         try {
           const datum = decodeDatum(u, lucid);
           if (datum.owner !== fullWalletAddress || datum.renter !== null) return [];
           return [{ policyId: datum.nft_policy, assetName: datum.nft_asset_name, name: datum.nft_asset_name } as NftAsset];
         } catch { return []; }
       });
+      const owned = await Promise.all(
+        raw.map(async (a: NftAsset) => {
+          const meta = await fetchNftMetadata(a.policyId, a.assetName, network);
+          return (meta as any).error
+            ? a
+            : { ...a, image: (meta as any).image ?? undefined, name: (meta as any).name ?? a.name } as NftAsset;
+        })
+      );
       setCancelNfts(owned);
       setShowCancelModal(true);
     } catch (err) {
