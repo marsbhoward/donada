@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import RentModal from '../components/RentModal';
 import TxConfirmModal from '../components/TxConfirmModal';
 import { BrowserWallet } from '@meshsdk/core';
@@ -935,8 +935,6 @@ function getAvailableWallets(): WalletInfo[] {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DonadaPlatform() {
-  const logoHue = useMemo(() => Math.floor(Math.random() * 360), []);
-
   // Network (toggled in admin panel; defaults to Preview for testnet)
   const [network, setNetwork] = useState<Network>('Preview');
 
@@ -1002,7 +1000,7 @@ export default function DonadaPlatform() {
   const [holderSyncError, setHolderSyncError] = useState<string | null>(null);
 
   // On-chain NFT stats (total supply + open rental listings)
-  const [nftStats, setNftStats] = useState<{ total: number; openRentals: number } | null>(null);
+  const [nftStats, setNftStats] = useState<{ total: number; openRentals: number; activeRentals: number; expiredRentals: number } | null>(null);
   // Featured image — first NFT under the policy, loaded from on-chain metadata
   const [featuredNftImage, setFeaturedNftImage] = useState<string | null>(null);
 
@@ -1063,12 +1061,17 @@ export default function DonadaPlatform() {
         const lucid = await initLucid(network);
         const { contractAddress } = await loadRentalValidator(lucid);
         const utxos = await lucid.utxosAt(contractAddress);
-        const openRentals = utxos.filter(u => {
-          try { return decodeDatum(u, lucid).renter === null; }
-          catch { return false; }
-        }).length;
+        const now = BigInt(Date.now());
+        let openRentals = 0, activeRentals = 0, expiredRentals = 0;
+        for (const u of utxos) {
+          try {
+            const d = decodeDatum(u, lucid);
+            if (d.draw_date <= now) { expiredRentals++; continue; }
+            if (d.renter === null) openRentals++; else activeRentals++;
+          } catch { /* skip malformed UTxOs */ }
+        }
 
-        if (!cancelled) setNftStats({ total, openRentals });
+        if (!cancelled) setNftStats({ total, openRentals, activeRentals, expiredRentals });
       } catch (err) {
         console.error('Failed to fetch NFT stats:', err);
       }
@@ -1497,7 +1500,7 @@ export default function DonadaPlatform() {
         return rentNft(nft.assetName, fullWalletAddress, validator, lucid);
       });
       setTxConfirm({ title: 'NFT Rented!', txHash: result.txHash });
-      setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - 1) } : prev);
+      setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - 1), activeRentals: prev.activeRentals + 1 } : prev);
       setUserEntries(prev => prev ? { ...prev, renting: prev.renting + 1, total: prev.total + 1 } : prev);
       notifyRentalConfirmed({
         nftName: nft.name ?? nft.assetName,
@@ -1882,8 +1885,8 @@ export default function DonadaPlatform() {
         <div className="logo-group">
           <h1 className="logo">
             <a href="https://donada.io" target="_blank" rel="noopener noreferrer">
-              DON
-              <span style={{ color: 'transparent', WebkitTextStroke: `1px hsl(${logoHue},90%,48%)` }}>ADA</span>
+              <span style={isDarkMode ? { color: 'transparent', WebkitTextStroke: '1px #ffffff' } : {}}>DON</span>
+              <span style={isDarkMode ? {} : { color: 'transparent', WebkitTextStroke: '1px #1d1d1f' }}>ADA</span>
             </a>
           </h1>
           <button className="theme-toggle" onClick={() => {
@@ -2027,7 +2030,7 @@ export default function DonadaPlatform() {
               </div>
             </div>
 
-            <div className="right-section">
+            {fullWalletAddress !== PROJECT_WALLET_ADDRESS && <div className="right-section">
               <div className="action-block">
                 <div className="action-text">Browse Rental Listings</div>
                 <button
@@ -2092,12 +2095,18 @@ export default function DonadaPlatform() {
                   )}
                 </>
               )}
-            </div>
+            </div>}
           </div>
         </div>
       {fullWalletAddress === PROJECT_WALLET_ADDRESS && (
         <section className="admin-draw">
           <h3>Admin — Execute Draw</h3>
+          {nftStats != null && (
+            <p style={{ fontSize: '0.8rem', opacity: 0.7, margin: '0 0 0.5rem' }}>
+              Active contracts: {nftStats.openRentals + nftStats.activeRentals}
+              {' '}({nftStats.openRentals} listed, {nftStats.activeRentals} rented)
+            </p>
+          )}
           <div className="action-block" style={{ marginBottom: '0.5rem' }}>
             <label style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
               Network:
@@ -2167,7 +2176,14 @@ export default function DonadaPlatform() {
           <hr className="section-break" style={{ margin: '1rem 0' }} />
 
           <div className="action-block">
-            <div className="action-text">Claim Back Expired Rentals</div>
+            <div className="action-text">
+              Claim Back Expired Rentals
+              {nftStats != null && nftStats.expiredRentals > 0 && (
+                <span style={{ marginLeft: '0.5rem', fontSize: '0.8rem', opacity: 0.7 }}>
+                  ({nftStats.expiredRentals})
+                </span>
+              )}
+            </div>
             <button
               className="select-btn small"
               disabled={isClaimingBack}
