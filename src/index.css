@@ -1,15 +1,13 @@
 body {
   margin: 0;
-  font-family: Arial, sans-serif;
-  font-variant: small-caps;
+  font-family: 'Geist', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-overflow-scrolling: touch;
 }
 
 button, input, select, textarea {
-  font-family: Arial, sans-serif;
-  font-variant: small-caps;
+  font-family: 'Geist', system-ui, sans-serif;
 }
 
 code {

@@ -2,20 +2,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import RentModal from '../components/RentModal';
 import TxConfirmModal from '../components/TxConfirmModal';
-import { BrowserWallet } from '@meshsdk/core';
 import { fetchNftMetadata } from '../utils/nftMetadata';
 import { notifyListingCreated, notifyRentalConfirmed } from '../utils/notifications';
-import { Lucid, Blockfrost, fromText, toText, Data, Constr, UTxO, C, fromHex, toHex, ProtocolParameters, applyDoubleCborEncoding } from 'lucid-cardano';
+import {
+  Lucid, type LucidEvolution, Blockfrost,
+  fromText, toText, Data, Constr, type UTxO,
+  applyDoubleCborEncoding,
+  validatorToAddress, getAddressDetails, credentialToAddress,
+  makeWalletFromAPI, type WalletApi,
+} from '@lucid-evolution/lucid';
 
 // ── Contract constants ────────────────────────────────────────────────────────
 
 // Legacy policy ID (DonodaNFT001–003): 21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a
-const DONADA_POLICY_ID   = '6c8b99e48576746aa1efa39cc952b3a66dfb76a9fcf82aaca5a1ab5c';
+const DONADA_POLICY_ID   = '474b3f587a9eca8fecd1c0525f61e63e5124b0ec535a3b70072ea5de';
 
-// Collection name — hardcoded for now. Future: fetch first asset under the policy
-// via Blockfrost, read onchain_metadata.name, strip trailing token-number suffix
-// (e.g. "DONADA Test 000" → "DONADA Test") to derive the name dynamically.
-const COLLECTION_NAME    = 'DONADA Test';
+const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
 const POLICY_IDS         = [DONADA_POLICY_ID, PARTNER_POLICY_ID].filter(Boolean) as string[];
 const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
@@ -29,7 +31,7 @@ interface ValidatorSetup {
 
 let _validatorCache: ValidatorSetup | null = null;
 
-async function loadRentalValidator(lucid: Lucid): Promise<ValidatorSetup> {
+async function loadRentalValidator(network: Network): Promise<ValidatorSetup> {
   if (_validatorCache) return _validatorCache;
 
   const resp = await fetch('/data/plutus.json');
@@ -41,13 +43,12 @@ async function loadRentalValidator(lucid: Lucid): Promise<ValidatorSetup> {
   );
   if (!spendValidator) throw new Error('rental spend validator not found in plutus.json');
 
-  const contractAddress = lucid.utils.credentialToAddress(
-    lucid.utils.scriptHashToCredential(spendValidator.hash)
-  );
+  const compiledCode = applyDoubleCborEncoding(spendValidator.compiledCode);
+  const contractAddress = validatorToAddress(network, { type: 'PlutusV3', script: compiledCode });
 
   _validatorCache = {
     contractAddress,
-    compiledCode: spendValidator.compiledCode,
+    compiledCode,
   };
   return _validatorCache;
 }
@@ -62,8 +63,7 @@ interface WalletInfo {
 
 interface ConnectedWalletState {
   name: string;
-  wallet: BrowserWallet;
-  api: unknown; // enabled CIP-30 API passed to lucid.selectWallet()
+  api: unknown; // enabled CIP-30 API passed to lucid.selectWallet.fromAPI()
 }
 
 interface NftAsset {
@@ -101,146 +101,24 @@ interface InteractionResult {
 
 type Network = 'Mainnet' | 'Preview';
 
+// Module-level network tracker — set by initLucid, used by standalone address helpers.
+let _currentNetwork: Network = 'Preview';
+
 function blockfrostConfig(network: Network): { url: string; apiKey: string } {
   return network === 'Preview'
     ? { url: 'https://cardano-preview.blockfrost.io/api/v0', apiKey: process.env.REACT_APP_BlockFrost_API_KEY_Preview ?? '' }
     : { url: 'https://cardano-mainnet.blockfrost.io/api/v0', apiKey: process.env.REACT_APP_BlockFrost_API_KEY_Mainnet ?? '' };
 }
 
-// Conway era testnets return expanded cost models that lucid-cardano can't handle.
-// Truncate to the max entries lucid expects for V1 and V2.
-class ConwayCompatBlockfrost extends Blockfrost {
-  override async getProtocolParameters(): Promise<ProtocolParameters> {
-    const params = await super.getProtocolParameters();
-    const cm = params.costModels as Record<string, Record<string, number>> | undefined;
-    if (!cm) return params;
-    const patched = { ...cm };
-    if (patched.PlutusV1) patched.PlutusV1 = Object.fromEntries(Object.entries(patched.PlutusV1).slice(0, 166));
-    if (patched.PlutusV2) patched.PlutusV2 = Object.fromEntries(Object.entries(patched.PlutusV2).slice(0, 175));
-    // PlutusV3 is NOT truncated — patchLucidV3CostModels stores all entries in _v3OnlyCostmdls
-    // for hash_script_data, and the node uses all 350 entries when computing the expected hash.
-    return { ...params, costModels: patched as ProtocolParameters['costModels'] };
-  }
-}
-
-// C.Int.new only accepts non-negative BigNum; V3 cost models include negative values.
-function toCmlInt(value: number): any {
-  const abs = Math.abs(Math.round(value));
-  return value < 0
-    ? (C as any).Int.new_negative(C.BigNum.from_str(abs.toString()))
-    : (C as any).Int.new(C.BigNum.from_str(abs.toString()));
-}
-
-// CML's CostModel.new_plutus_v3() and Costmdls.from_bytes() are both capped at 179
-// entries in this version of lucid-cardano, but Preview testnet has 350 V3 cost model
-// entries. We bypass CML entirely: build the language-views CBOR manually and compute
-// hash_script_data ourselves via blake2b-256 on the raw preimage bytes.
-// Language views CBOR format for V3: {2: [cost0, cost1, ..., costN-1]}
-function buildV3LangViewsCbor(costs: number[]): Uint8Array {
-  function pushCborInt(buf: number[], val: number): void {
-    const n = val >= 0 ? val : -val - 1;
-    const major = val >= 0 ? 0x00 : 0x20;
-    if (n <= 23)          buf.push(major | n);
-    else if (n <= 0xFF)   buf.push(major | 0x18, n);
-    else if (n <= 0xFFFF) buf.push(major | 0x19, (n >> 8) & 0xFF, n & 0xFF);
-    else                  buf.push(major | 0x1A, (n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF);
-  }
-  const buf: number[] = [];
-  buf.push(0xA1, 0x02);    // map(1), key 2 = PlutusV3
-  const len = costs.length;
-  if (len <= 23)        buf.push(0x80 | len);
-  else if (len <= 0xFF) buf.push(0x98, len);
-  else                  buf.push(0x99, (len >> 8) & 0xFF, len & 0xFF);
-  for (const c of costs) pushCborInt(buf, Math.round(c));
-  return new Uint8Array(buf);
-}
-
-// hash_script_data preimage = redeemers_cbor || 0xA0 (empty datums map) || lang_views_cbor
-// Blake2b-256 of the concatenation, wrapped in ScriptDataHash.
-function hashScriptDataV3(redeemers: any, v3Costs: number[]): any {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const b2b = require('blake2b') as any;
-  const rdmrs     = redeemers.to_bytes() as Uint8Array;
-  const langViews = buildV3LangViewsCbor(v3Costs);
-  // Preimage = redeemers || lang_views. No datums section when datums is None —
-  // confirmed by decoding the node's error blob: redeemers end immediately before A1 02.
-  const preimage = new Uint8Array(rdmrs.length + langViews.length);
-  preimage.set(rdmrs, 0);
-  preimage.set(langViews, rdmrs.length);
-  const hash = b2b(32).update(preimage).digest() as Uint8Array;
-  return (C as any).ScriptDataHash.from_bytes(hash);
-}
-
-// V3 cost model raw values (all 350 entries) stored after initLucid.
-// _linearFee and _exUnitPrices are stored for min_fee computation.
-// V3 is NOT in txBuilderConfig — including it causes CML to panic inside
-// add_inputs_from/balance because the V3 script is never passed to txBuilder.
-let _v3CostValues: number[] | null = null;
-let _linearFee:    any = null; // C.LinearFee
-let _exUnitPrices: any = null; // C.ExUnitPrices
-
-async function patchLucidV3CostModels(lucid: Lucid, network: Network): Promise<void> {
-  const provider = (lucid as any).provider;
-  const pp = await provider.getProtocolParameters();
-  const cm = (pp.costModels ?? {}) as Record<string, Record<string, number>>;
-
-  const slotConfig = network === 'Mainnet'
-    ? { zeroTime: 1596059091000, zeroSlot: 4492800, slotLength: 1000 }
-    : { zeroTime: 1666656000000, zeroSlot: 0, slotLength: 1000 };
-
-  // V3-only cost models — hash_script_data must include ONLY the languages present.
-  // Using V1+V2+V3 when only a V3 script is in the tx produces a different hash.
-  if (cm.PlutusV3) {
-    _v3CostValues = Object.values(cm.PlutusV3) as number[];
-  } else {
-    console.warn('[V3Patch] no PlutusV3 cost models in protocol params');
-  }
-
-  // ── Build txBuilderConfig with V1+V2 ONLY ────────────────────────────────────
-  // Omitting V3 here prevents CML from looking up the V3 script during coin selection /
-  // fee estimation — which would throw null because we never call add_plutus_v3_script().
-  const configCostmdls = (C as any).Costmdls.new();
-
-  const cfgV1 = (C as any).CostModel.new();
-  Object.values(cm.PlutusV1 ?? {}).forEach((cost: number, i: number) => cfgV1.set(i, toCmlInt(cost)));
-  configCostmdls.insert((C as any).Language.new_plutus_v1(), cfgV1);
-
-  const cfgV2 = (C as any).CostModel.new_plutus_v2();
-  Object.values(cm.PlutusV2 ?? {}).forEach((cost: number, i: number) => cfgV2.set(i, toCmlInt(cost)));
-  configCostmdls.insert((C as any).Language.new_plutus_v2(), cfgV2);
-
-  _linearFee    = C.LinearFee.new(C.BigNum.from_str(pp.minFeeA.toString()), C.BigNum.from_str(pp.minFeeB.toString()));
-  _exUnitPrices = (C as any).ExUnitPrices.from_float(pp.priceMem, pp.priceStep);
-
-  (lucid as any).txBuilderConfig = (C as any).TransactionBuilderConfigBuilder.new()
-    .coins_per_utxo_byte(C.BigNum.from_str(pp.coinsPerUtxoByte.toString()))
-    .fee_algo(_linearFee)
-    .key_deposit(C.BigNum.from_str(pp.keyDeposit.toString()))
-    .pool_deposit(C.BigNum.from_str(pp.poolDeposit.toString()))
-    .max_tx_size(pp.maxTxSize)
-    .max_value_size(pp.maxValSize)
-    .collateral_percentage(pp.collateralPercentage)
-    .max_collateral_inputs(pp.maxCollateralInputs)
-    .max_tx_ex_units(C.ExUnits.new(C.BigNum.from_str(pp.maxTxExMem.toString()), C.BigNum.from_str(pp.maxTxExSteps.toString())))
-    .ex_unit_prices(_exUnitPrices)
-    .slot_config(C.BigNum.from_str(slotConfig.zeroTime.toString()), C.BigNum.from_str(slotConfig.zeroSlot.toString()), slotConfig.slotLength)
-    .blockfrost((C as any).Blockfrost.new((provider?.url ?? '') + '/utils/txs/evaluate', provider?.projectId ?? ''))
-    .costmdls(configCostmdls)
-    .build();
-}
-
 let _lucidCacheNetwork: Network | null = null;
-let _lucidCachePromise: Promise<Lucid> | null = null;
+let _lucidCachePromise: Promise<LucidEvolution> | null = null;
 
-async function initLucid(network: Network): Promise<Lucid> {
+async function initLucid(network: Network): Promise<LucidEvolution> {
   if (_lucidCacheNetwork === network && _lucidCachePromise) return _lucidCachePromise;
   _lucidCacheNetwork = network;
-  _lucidCachePromise = (async () => {
-    const { url, apiKey } = blockfrostConfig(network);
-    const lucid = await Lucid.new(new ConwayCompatBlockfrost(url, apiKey), network);
-    await patchLucidV3CostModels(lucid, network);
-    return lucid;
-  })();
+  _currentNetwork = network;
+  const { url, apiKey } = blockfrostConfig(network);
+  _lucidCachePromise = Lucid(new Blockfrost(url, apiKey), network);
   return _lucidCachePromise;
 }
 
@@ -248,8 +126,8 @@ async function initLucid(network: Network): Promise<Lucid> {
 
 // Converts a bech32 address to the Plutus Constr representation that Aiken
 // expects for the Address type: Constr(0, [PaymentCredential, Option<StakeCredential>])
-function addressToData(lucid: Lucid, address: string): Constr<Data> {
-  const { paymentCredential, stakeCredential } = lucid.utils.getAddressDetails(address);
+function addressToData(address: string): Constr<Data> {
+  const { paymentCredential, stakeCredential } = getAddressDetails(address);
   if (!paymentCredential) throw new Error(`No payment credential in address: ${address}`);
 
   const paymentData = paymentCredential.type === 'Key'
@@ -268,7 +146,7 @@ function addressToData(lucid: Lucid, address: string): Constr<Data> {
 }
 
 // Converts a decoded Plutus Address Constr back to a bech32 address string.
-function dataToAddress(lucid: Lucid, data: Data): string {
+function dataToAddress(data: Data): string {
   const constr = data as Constr<Data>;
   const paymentConstr = constr.fields[0] as Constr<Data>;
   const stakeConstr   = constr.fields[1] as Constr<Data>;
@@ -286,41 +164,41 @@ function dataToAddress(lucid: Lucid, data: Data): string {
       : { type: 'Script' as const, hash: inner.fields[0] as string };
   }
 
-  return lucid.utils.credentialToAddress(paymentCred, stakeCred);
+  return credentialToAddress(_currentNetwork, paymentCred, stakeCred);
 }
 
-function encodeDatum(datum: RentalDatum, lucid: Lucid): string {
+function encodeDatum(datum: RentalDatum): string {
   return Data.to(
     new Constr(0, [
       datum.nft_policy,
       fromText(datum.nft_asset_name),
-      addressToData(lucid, datum.owner),
+      addressToData(datum.owner),
       datum.renter !== null
-        ? new Constr(0, [addressToData(lucid, datum.renter)])
+        ? new Constr(0, [addressToData(datum.renter)])
         : new Constr(1, []),
       datum.rental_fee,
       datum.draw_date,
-      addressToData(lucid, datum.project_wallet),
+      addressToData(datum.project_wallet),
     ])
   );
 }
 
-function decodeDatum(utxo: UTxO, lucid: Lucid): RentalDatum {
+function decodeDatum(utxo: UTxO): RentalDatum {
   if (!utxo.datum) throw new Error(`UTxO ${utxo.txHash}#${utxo.outputIndex} has no inline datum.`);
   const constr = Data.from(utxo.datum) as Constr<Data>;
   const f = constr.fields;
 
   const renterConstr = f[3] as Constr<Data>;
-  const renter = renterConstr.index === 0 ? dataToAddress(lucid, renterConstr.fields[0]) : null;
+  const renter = renterConstr.index === 0 ? dataToAddress(renterConstr.fields[0]) : null;
 
   return {
     nft_policy:     f[0] as string,
     nft_asset_name: toText(f[1] as string),
-    owner:          dataToAddress(lucid, f[2]),
+    owner:          dataToAddress(f[2]),
     renter,
     rental_fee:     f[4] as bigint,
     draw_date:      f[5] as bigint,
-    project_wallet: dataToAddress(lucid, f[6]),
+    project_wallet: dataToAddress(f[6]),
   };
 }
 
@@ -340,7 +218,7 @@ async function submitListing(
   rental_fee_ada: string | number,
   drawDateMs: number,
   contractAddress: string,
-  lucid: Lucid
+  lucid: LucidEvolution
 ): Promise<string> {
   const datum: RentalDatum = {
     nft_policy:     DONADA_POLICY_ID,
@@ -354,9 +232,9 @@ async function submitListing(
 
   const tx = await lucid
     .newTx()
-    .payToContract(
+    .pay.ToContract(
       contractAddress,
-      { inline: encodeDatum(datum, lucid) },
+      { kind: 'inline', value: encodeDatum(datum) },
       {
         lovelace: BigInt(2000000),
         [DONADA_POLICY_ID + fromText(nft_asset_name)]: BigInt(1),
@@ -365,13 +243,13 @@ async function submitListing(
     .addSigner(owner_address)
     .complete();
 
-  const signed = await tx.sign().complete();
+  const signed = await tx.sign.withWallet().complete();
   return signed.submit();
 }
 
 // ── Rental interaction helpers (renter pays fee, owner cancels) ───────────────
 
-async function fetchRentalUtxo(nftAssetName: string, contractAddress: string, lucid: Lucid): Promise<UTxO> {
+async function fetchRentalUtxo(nftAssetName: string, contractAddress: string, lucid: LucidEvolution): Promise<UTxO> {
   const unit = DONADA_POLICY_ID + fromText(nftAssetName);
   const utxos = await lucid.utxosAtWithUnit(contractAddress, unit);
 
@@ -381,233 +259,21 @@ async function fetchRentalUtxo(nftAssetName: string, contractAddress: string, lu
   return utxos[0];
 }
 
-function buildRentRedeemer(renterAddress: string, lucid: Lucid): string {
+function buildRentRedeemer(renterAddress: string): string {
   // RentalRedeemer::Rent is index 1 in the Aiken enum: Constr(1, [renter_address])
-  return Data.to(new Constr(1, [addressToData(lucid, renterAddress)]));
+  return Data.to(new Constr(1, [addressToData(renterAddress)]));
 }
 
-// ── V3 spend transaction helpers ──────────────────────────────────────────────
-//
-// lucid's construct() throws null for V3 scripts (CML lacks V3 support).
-// lucid's witnessSetBuilder silently drops V3 scripts (no add_plutus_v3_script).
-// We bypass both by building manually: add_input → balance → build_tx → assemble
-// witness set directly → sign via wallet API → submit via provider.
-
-function utxoToCml(utxo: UTxO): any {
-  const address = (() => {
-    try { return C.Address.from_bech32(utxo.address); }
-    catch { return (C as any).ByronAddress.from_base58(utxo.address).to_address(); }
-  })();
-
-  const multiAsset = (C as any).MultiAsset.new();
-  const lovelace = utxo.assets['lovelace'];
-  const units = Object.keys(utxo.assets);
-  const policies = Array.from(new Set(
-    units.filter(u => u !== 'lovelace').map(u => u.slice(0, 56))
-  )) as string[];
-
-  policies.forEach(policy => {
-    const policyUnits = units.filter(u => u.slice(0, 56) === policy);
-    const assetMap = (C as any).Assets.new();
-    policyUnits.forEach(unit => {
-      assetMap.insert(
-        (C as any).AssetName.new(fromHex(unit.slice(56))),
-        C.BigNum.from_str(utxo.assets[unit].toString()),
-      );
-    });
-    multiAsset.insert((C as any).ScriptHash.from_bytes(fromHex(policy)), assetMap);
-  });
-
-  const value = C.Value.new(C.BigNum.from_str(lovelace ? lovelace.toString() : '0'));
-  if (units.length > 1 || !lovelace) value.set_multiasset(multiAsset);
-
-  const output = C.TransactionOutput.new(address, value);
-  if (utxo.datumHash) {
-    output.set_datum((C as any).Datum.new_data_hash(
-      (C as any).DataHash.from_bytes(fromHex(utxo.datumHash))
-    ));
-  } else if (utxo.datum) {
-    output.set_datum((C as any).Datum.new_data(
-      (C as any).Data.new(C.PlutusData.from_bytes(fromHex(utxo.datum)))
-    ));
-  }
-
-  return (C as any).TransactionUnspentOutput.new(
-    (C as any).TransactionInput.new(
-      (C as any).TransactionHash.from_bytes(fromHex(utxo.txHash)),
-      C.BigNum.from_str(utxo.outputIndex.toString()),
-    ),
-    output,
-  );
-}
-
-function findCollateral(walletUtxos: any): any | null {
-  for (let i = 0; i < walletUtxos.len(); i++) {
-    const u = walletUtxos.get(i);
-    if (!u.output().amount().multiasset()) return u;
-  }
-  return null;
-}
-
-// Build, sign, and submit a Plutus V3 spend transaction.
-//
-// Non-script tasks (addSigner, payTo, validTo) must be queued on txObj before calling.
-// collectFrom must NOT be queued — the script input is added here manually.
-//
-// Fee strategy:
-//   CML's PlutusWitness.new(PlutusData) carries no ExUnits, so balance() computes the
-//   fee for 0 ExUnits (F0).  After build_tx() we construct synthetic 2M-mem/1B-step
-//   redeemers and call the standalone min_fee(mockTx) to get the correct fee F1.
-//   We then rebuild the TransactionBody with F1 and the change output reduced by (F1-F0).
-//
-// Script injection:
-//   V3 scripts are set directly on TransactionWitnessSet — witnessSetBuilder has no
-//   add_plutus_v3_script() method and silently drops them via add_existing().
-async function completeV3Tx(
-  txObj: any,
-  scriptUtxo: UTxO | UTxO[],
-  redeemerHex: string,
-  lucid: Lucid,
-  compiledCode: string,
-): Promise<string> {
-  if (!_v3CostValues || !_linearFee || !_exUnitPrices) {
-    throw new Error('V3 cost models / fee params not initialised — call initLucid first');
-  }
-
-  let task = (txObj as any).tasks.shift();
-  while (task) {
-    await task(txObj as any);
-    task = (txObj as any).tasks.shift();
-  }
-
-  // Add all script inputs. Each gets the same redeemer data; CML assigns indices
-  // by sorted input order, which the synthetic-redeemer loop below handles.
-  const scriptUtxos = Array.isArray(scriptUtxo) ? scriptUtxo : [scriptUtxo];
-  const redeemerData = C.PlutusData.from_bytes(fromHex(redeemerHex));
-  for (const su of scriptUtxos) {
-    txObj.txBuilder.add_input(
-      utxoToCml(su),
-      (C as any).ScriptWitness.new_plutus_witness(
-        C.PlutusWitness.new(redeemerData, undefined, undefined)
-      ),
-    );
-  }
-
-  // Collateral is required for any Plutus-spending transaction.
-  const walletUtxos = await lucid.wallet.getUtxosCore();
-  const collateral = findCollateral(walletUtxos);
-  if (!collateral) throw new Error('No pure-ADA UTxO available for collateral');
-  txObj.txBuilder.add_collateral(collateral);
-
-  const changeAddress = C.Address.from_bech32(await lucid.wallet.address());
-  txObj.txBuilder.add_inputs_from(walletUtxos, changeAddress, Uint32Array.from([200, 1000, 1500, 800, 800, 5000]));
-  txObj.txBuilder.balance(changeAddress, undefined);
-
-  // build_tx() produces the balanced tx.  Redeemers will have ExUnits = 0 because
-  // PlutusWitness.new(PlutusData) carries no ExUnits; the fee F0 was computed for 0 ExUnits.
-  const partialTx = txObj.txBuilder.build_tx();
-  const zeroRedeemers = partialTx.witness_set().redeemers();
-  if (!zeroRedeemers || zeroRedeemers.len() === 0) {
-    throw new Error('build_tx() produced no redeemers');
-  }
-
-  // Build synthetic redeemers with 2M mem / 1B steps to compute the correct fee.
-  const synthRedeemers = (C as any).Redeemers.new();
-  for (let i = 0; i < zeroRedeemers.len(); i++) {
-    const r = zeroRedeemers.get(i);
-    synthRedeemers.add((C as any).Redeemer.new(
-      r.tag(), r.index(), r.data(),
-      C.ExUnits.new(C.BigNum.from_str('2000000'), C.BigNum.from_str('1000000000')),
-    ));
-  }
-
-  // Prepare V3 script container (reused in wsets below).
-  // applyDoubleCborEncoding brings Aiken's Blueprint compiledCode into the encoding
-  // CML expects for PlutusScript.from_bytes() — same transform Lucid uses for V1/V2.
-  const plutusScript = C.PlutusScript.from_bytes(fromHex(applyDoubleCborEncoding(compiledCode)));
-  const v3Scripts = (C as any).PlutusScripts.new();
-  v3Scripts.add(plutusScript);
-
-  // Compute the correct fee via min_fee on a mock tx that carries synthetic redeemers.
-  const mockWset = C.TransactionWitnessSet.new();
-  mockWset.set_redeemers(synthRedeemers);
-  mockWset.set_plutus_v3_scripts(v3Scripts);
-  const mockTx = C.Transaction.new(partialTx.body(), mockWset, partialTx.auxiliary_data());
-  // min_fee on mockTx excludes vkey witnesses — add a 10,000 lovelace buffer
-  // (~44 lovelace/byte × ~102 bytes per signer × 2 signers + margin).
-  const F0 = BigInt(partialTx.body().fee().to_str());
-  const F1 = BigInt(((C as any).min_fee(mockTx, _linearFee, _exUnitPrices) as any).to_str()) + 10000n;
-  const finalFee = C.BigNum.from_str(F1.toString());
-  const feeDelta = F1 - F0;
-
-  // Rebuild the tx body: same inputs, fee = F1, last output (change) reduced by feeDelta.
-  const origOutputs = partialTx.body().outputs();
-  const numOut = origOutputs.len();
-  if (numOut === 0) throw new Error('build_tx() produced no outputs — cannot find change output');
-
-  const newOutputs = (C as any).TransactionOutputs.new();
-  for (let i = 0; i < numOut - 1; i++) {
-    const o = origOutputs.get(i);
-    newOutputs.add(C.TransactionOutput.from_bytes(o.to_bytes()));
-  }
-
-  const changeOut = origOutputs.get(numOut - 1);
-  const changeVal = changeOut.amount();
-  const newLovelace = BigInt(changeVal.coin().to_str()) - feeDelta;
-  if (newLovelace < 0n) throw new Error(`feeDelta (${feeDelta}) exceeds change output — wallet UTxO may be too small`);
-  const newChangeVal = C.Value.from_bytes(changeVal.to_bytes());
-  newChangeVal.set_coin(C.BigNum.from_str(newLovelace.toString()));
-  const newChangeOut = C.TransactionOutput.new(changeOut.address(), newChangeVal);
-  const changeDatum = changeOut.datum();
-  if (changeDatum) newChangeOut.set_datum(changeDatum);
-  newOutputs.add(newChangeOut);
-
-  const origBody = partialTx.body();
-  const newBody = C.TransactionBody.new(origBody.inputs(), newOutputs, finalFee, origBody.ttl());
-  const certs         = origBody.certs();           if (certs)           newBody.set_certs(certs);
-  const withdrawals   = origBody.withdrawals();     if (withdrawals)     newBody.set_withdrawals(withdrawals);
-  const validStart    = origBody.validity_start_interval(); if (validStart) newBody.set_validity_start_interval(validStart);
-  const mint          = origBody.mint();            if (mint)            newBody.set_mint(mint);
-  const collateralI   = origBody.collateral();      if (collateralI)     newBody.set_collateral(collateralI);
-  const reqSigners    = origBody.required_signers(); if (reqSigners)     newBody.set_required_signers(reqSigners);
-  const networkId     = origBody.network_id();      if (networkId)       newBody.set_network_id(networkId);
-  const colReturn     = origBody.collateral_return(); if (colReturn)     newBody.set_collateral_return(colReturn);
-  const totalCol      = origBody.total_collateral(); if (totalCol)       newBody.set_total_collateral(totalCol);
-  const refInputs     = origBody.reference_inputs(); if (refInputs)      newBody.set_reference_inputs(refInputs);
-
-  // script_data_hash: manual blake2b-256 of (redeemers || 0xA0 || v3_lang_views).
-  // CML's hash_script_data can't accept 350-entry V3 cost models, so we compute it ourselves.
-  const scriptDataHash = hashScriptDataV3(synthRedeemers, _v3CostValues!);
-  newBody.set_script_data_hash(scriptDataHash);
-
-  // Assemble unsigned tx with V3 script + synthetic redeemers baked into the wset.
-  const unsignedWset = C.TransactionWitnessSet.new();
-  unsignedWset.set_plutus_v3_scripts(v3Scripts);
-  unsignedWset.set_redeemers(synthRedeemers);
-
-  const txForSigning = C.Transaction.new(newBody, unsignedWset, partialTx.auxiliary_data());
-  const walletWset = await (lucid as any).wallet.signTx(txForSigning);
-
-  // Merge wallet vkeys — create a fresh wset so the V3 script is preserved.
-  const signedWset = C.TransactionWitnessSet.new();
-  signedWset.set_plutus_v3_scripts(v3Scripts);
-  signedWset.set_redeemers(synthRedeemers);
-  const vkeys = walletWset.vkeys();
-  if (vkeys) signedWset.set_vkeys(vkeys);
-
-  const signedTx = C.Transaction.new(newBody, signedWset, partialTx.auxiliary_data());
-  return await (lucid as any).provider.submitTx(toHex(signedTx.to_bytes()));
-}
 
 async function rentNft(
   nftAssetName: string,
   renterAddress: string,
   validator: ValidatorSetup,
-  lucid: Lucid
+  lucid: LucidEvolution
 ): Promise<InteractionResult> {
   const { contractAddress, compiledCode } = validator;
   const rentalUtxo = await fetchRentalUtxo(nftAssetName, contractAddress, lucid);
-  const datum = decodeDatum(rentalUtxo, lucid);
+  const datum = decodeDatum(rentalUtxo);
 
   if (datum.renter !== null) {
     throw new Error(`"${nftAssetName}" already has a registered renter.`);
@@ -627,24 +293,24 @@ async function rentNft(
   const drawMs  = Number(datum.draw_date);
   const validTo = Math.min(fiveMin, drawMs - 60_000);
 
-  // collectFrom is NOT queued — completeV3Tx adds the script input manually.
-  const txObj = lucid
-    .newTx()
-    .payToContract(
+  const tx = await lucid.newTx()
+    .collectFrom([rentalUtxo], buildRentRedeemer(renterAddress))
+    .attach.SpendingValidator({ type: 'PlutusV3', script: compiledCode })
+    .pay.ToContract(
       contractAddress,
-      { inline: encodeDatum(updatedDatum, lucid) },
+      { kind: 'inline', value: encodeDatum(updatedDatum) },
       {
         lovelace: rentalUtxo.assets.lovelace,
         [DONADA_POLICY_ID + fromText(nftAssetName)]: BigInt(1),
       }
     )
-    .payToAddress(datum.owner,          { lovelace: ownerShare })
-    .payToAddress(datum.project_wallet, { lovelace: projectShare })
+    .pay.ToAddress(datum.owner,          { lovelace: ownerShare })
+    .pay.ToAddress(datum.project_wallet, { lovelace: projectShare })
     .addSigner(renterAddress)
-    .validTo(validTo);
-
-  const redeemerHex = buildRentRedeemer(renterAddress, lucid);
-  const txHash = await completeV3Tx(txObj, rentalUtxo, redeemerHex, lucid, compiledCode);
+    .validTo(validTo)
+    .complete();
+  const signed = await tx.sign.withWallet().complete();
+  const txHash = await signed.submit();
 
   return {
     success: true,
@@ -676,7 +342,7 @@ const CLAIM_BACK_CHUNK_SIZE = 15;
 async function claimBackExpiredRentals(
   projectWalletAddress: string,
   validator: ValidatorSetup,
-  lucid: Lucid,
+  lucid: LucidEvolution,
   onProgress: (msg: string) => void,
 ): Promise<string[]> {
   const { contractAddress, compiledCode } = validator;
@@ -684,7 +350,7 @@ async function claimBackExpiredRentals(
   const now = BigInt(Date.now());
 
   const expired = utxos.filter(u => {
-    try { return decodeDatum(u, lucid).draw_date <= now; }
+    try { return decodeDatum(u).draw_date <= now; }
     catch { return false; }
   });
 
@@ -703,23 +369,25 @@ async function claimBackExpiredRentals(
     const chunk = chunks[c];
     if (chunks.length > 1) onProgress(`Tx ${c + 1}/${chunks.length}: returning ${chunk.length} NFT(s)…`);
 
-    const datums = chunk.map(u => decodeDatum(u, lucid));
+    const datums = chunk.map(u => decodeDatum(u));
     datums.forEach(d => onProgress(`  Returning ${d.nft_asset_name}…`));
 
     const maxDrawDate = datums.reduce((max, d) => d.draw_date > max ? d.draw_date : max, datums[0].draw_date);
 
-    const redeemerHex = Data.to(new Constr(2, []));
-    let txObj = lucid
-      .newTx()
+    let txBuilder = lucid.newTx()
+      .collectFrom(chunk, Data.to(new Constr(2, [])))
+      .attach.SpendingValidator({ type: 'PlutusV3', script: compiledCode })
       .addSigner(projectWalletAddress)
       .validFrom(Number(maxDrawDate) + 1000)
       .validTo(Date.now() + 2 * 60 * 60 * 1000);
 
     for (let i = 0; i < chunk.length; i++) {
-      txObj = txObj.payToAddress(datums[i].owner, chunk[i].assets);
+      txBuilder = txBuilder.pay.ToAddress(datums[i].owner, chunk[i].assets);
     }
 
-    const txHash = await completeV3Tx(txObj, chunk, redeemerHex, lucid, compiledCode);
+    const tx = await txBuilder.complete();
+    const signed = await tx.sign.withWallet().complete();
+    const txHash = await signed.submit();
     txHashes.push(txHash);
     onProgress(`Tx ${c + 1}/${chunks.length} done: ${txHash.slice(0, 12)}…`);
     // Wait for confirmation before next chunk so the change output is spendable.
@@ -770,21 +438,23 @@ async function cancelListingNft(
   nftAssetName: string,
   ownerAddress: string,
   validator: ValidatorSetup,
-  lucid: Lucid
+  lucid: LucidEvolution
 ): Promise<InteractionResult> {
   const { contractAddress, compiledCode } = validator;
   const listingUtxo = await fetchRentalUtxo(nftAssetName, contractAddress, lucid);
 
-  const datum = decodeDatum(listingUtxo, lucid);
+  const datum = decodeDatum(listingUtxo);
   if (datum.renter !== null) {
     throw new Error(`Cannot cancel "${nftAssetName}" — a renter is already registered.`);
   }
 
-  // collectFrom is NOT queued — completeV3Tx adds the script input manually.
-  const txObj = lucid.newTx().addSigner(ownerAddress);
-
-  const redeemerHex = Data.to(new Constr(0, []));
-  const txHash = await completeV3Tx(txObj, listingUtxo, redeemerHex, lucid, compiledCode);
+  const tx = await lucid.newTx()
+    .collectFrom([listingUtxo], Data.to(new Constr(0, [])))
+    .attach.SpendingValidator({ type: 'PlutusV3', script: compiledCode })
+    .addSigner(ownerAddress)
+    .complete();
+  const signed = await tx.sign.withWallet().complete();
+  const txHash = await signed.submit();
 
   return {
     success: true,
@@ -793,107 +463,8 @@ async function cancelListingNft(
   };
 }
 
-// ── Conway tag-258 CBOR stripper ─────────────────────────────────────────────
-//
-// Conway-era wallets (e.g. Eternl) encode Vkeywitnesses as a CBOR *set*
-// (tag 258 prefix before the array) instead of a plain CBOR array.
-// CML 0.10.7 calls Vkeywitnesses.from_bytes() expecting an array byte but
-// receives the tag byte and throws "expected 'Array' byte received 'Tag'".
-// Walk the CBOR tree and remove every occurrence of tag 258; all other
-// bytes (including Plutus Constr tags 121-122, byte strings, etc.) are
-// copied verbatim.
-function stripCborTag258(bytes: Uint8Array): Uint8Array {
-  const out: number[] = [];
-  let i = 0;
-
-  function copyN(n: number): void {
-    for (let j = 0; j < n; j++) out.push(bytes[i++]);
-  }
-
-  function readLen(info: number, push: boolean): number {
-    if (info <= 23) return info;
-    if (info === 24) { if (push) out.push(bytes[i]); return bytes[i++]; }
-    if (info === 25) {
-      const v = (bytes[i] << 8) | bytes[i + 1];
-      if (push) { out.push(bytes[i]); out.push(bytes[i + 1]); }
-      i += 2; return v;
-    }
-    if (info === 26) {
-      const v = ((bytes[i] << 24) | (bytes[i+1] << 16) | (bytes[i+2] << 8) | bytes[i+3]) >>> 0;
-      if (push) copyN(4);
-      else i += 4;
-      return v;
-    }
-    throw new Error(`CBOR additional info ${info} not supported in stripCborTag258`);
-  }
-
-  function walk(): void {
-    if (i >= bytes.length) return;
-    const b = bytes[i];
-    const major = b >> 5;
-    const info  = b & 0x1F;
-
-    if (major === 6) {
-      i++; // consume tag byte without emitting
-      const tagVal = readLen(info, false);
-      if (tagVal !== 258) {
-        // Re-emit the tag header bytes
-        if      (info <= 23) out.push(0xC0 | info);
-        else if (info === 24) { out.push(0xD8); out.push(tagVal); }
-        else if (info === 25) { out.push(0xD9); out.push((tagVal >> 8) & 0xFF); out.push(tagVal & 0xFF); }
-      }
-      walk();
-      return;
-    }
-
-    out.push(b); i++;
-    switch (major) {
-      case 0: case 1:
-        if (info === 24) copyN(1);
-        else if (info === 25) copyN(2);
-        else if (info === 26) copyN(4);
-        else if (info === 27) copyN(8);
-        break;
-      case 2: case 3: {
-        if (info === 31) { while (bytes[i] !== 0xFF) walk(); out.push(0xFF); i++; }
-        else { const len = readLen(info, true); copyN(len); }
-        break;
-      }
-      case 4: {
-        if (info === 31) { while (bytes[i] !== 0xFF) walk(); out.push(0xFF); i++; }
-        else { const n = readLen(info, true); for (let j = 0; j < n; j++) walk(); }
-        break;
-      }
-      case 5: {
-        if (info === 31) { while (bytes[i] !== 0xFF) walk(); out.push(0xFF); i++; }
-        else { const n = readLen(info, true); for (let j = 0; j < n * 2; j++) walk(); }
-        break;
-      }
-      case 7:
-        if (info === 24) copyN(1);
-        else if (info === 25) copyN(2);
-        else if (info === 26) copyN(4);
-        else if (info === 27) copyN(8);
-        break;
-    }
-  }
-
-  walk();
-  return new Uint8Array(out);
-}
-
-// Selects a CIP-30 wallet and patches lucid.wallet.signTx so that the tag-258
-// wrapper is stripped from the returned witness set before CML parses it.
-function selectAndPatchWallet(lucid: Lucid, cip30Api: unknown): void {
-  lucid.selectWallet(cip30Api as any);
-  const rawSign = (cip30Api as any).signTx.bind(cip30Api);
-  (lucid as any).wallet.signTx = async (tx: any, _partialSign?: boolean) => {
-    // Always partialSign=true: script inputs in spending txs are not owned by
-    // the wallet, so passing false causes "wallet does not have the secret key".
-    const rawHex = await rawSign(toHex(tx.to_bytes()), true);
-    const stripped = stripCborTag258(fromHex(rawHex));
-    return C.TransactionWitnessSet.from_bytes(stripped);
-  };
+function selectWallet(lucid: LucidEvolution, cip30Api: unknown): void {
+  lucid.selectWallet.fromAPI(cip30Api as WalletApi);
 }
 
 // Extracts a readable message from any thrown value, including CIP-30 APIError
@@ -924,6 +495,19 @@ const WALLET_BRAND_COLORS: Record<string, string> = {
   nufi:       '#4f46e5',
   begin:      '#06b6d4',
 };
+
+const WALLET_DOWNLOADS: { key: string; name: string; url: string }[] = [
+  { key: 'eternl',     name: 'Eternl',     url: 'https://eternl.io' },
+  { key: 'lace',       name: 'Lace',       url: 'https://www.lace.io' },
+  { key: 'vespr',      name: 'Vespr',      url: 'https://vespr.xyz' },
+  { key: 'nami',       name: 'Nami',       url: 'https://namiwallet.io' },
+  { key: 'flint',      name: 'Flint',      url: 'https://flint-wallet.com' },
+  { key: 'typhon',     name: 'Typhon',     url: 'https://typhonwallet.io' },
+  { key: 'yoroi',      name: 'Yoroi',      url: 'https://yoroi-wallet.com' },
+  { key: 'gerowallet', name: 'GeroWallet', url: 'https://gerowallet.io' },
+  { key: 'nufi',       name: 'NuFi',       url: 'https://nu.fi' },
+  { key: 'begin',      name: 'Begin',      url: 'https://begin.is' },
+];
 
 function getAvailableWallets(): WalletInfo[] {
   if (!window.cardano) return [];
@@ -958,6 +542,8 @@ export default function DonadaPlatform() {
   // Modal
   const [showRentModal, setShowRentModal] = useState(false);
   const [rentMode, setRentMode] = useState(false); // true = renter flow, false = owner listing flow
+  const [showConnectPrompt, setShowConnectPrompt] = useState(false);
+  const [promptWallets, setPromptWallets] = useState<WalletInfo[]>([]);
 
   // Owner listing flow
   const [ownedNfts, setOwnedNfts] = useState<NftAsset[]>([]);
@@ -985,9 +571,12 @@ export default function DonadaPlatform() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawError, setDrawError] = useState<string | null>(null);
 
-  // Tx confirmation modal
+  // Tx confirmation modal + on-chain confirmed toast
   const [txConfirm, setTxConfirm] = useState<{ title: string; txHash: string } | null>(null);
+  const [txConfirmedToast, setTxConfirmedToast] = useState<{ txHash: string } | null>(null);
+  const [showNoWalletModal, setShowNoWalletModal] = useState(false);
   const [drawLog, setDrawLog] = useState<string[]>([]);
+  const [walletNotice, setWalletNotice] = useState<string | null>(null);
 
   // Admin claim-back flow
   const [isClaimingBack, setIsClaimingBack] = useState(false);
@@ -1001,8 +590,9 @@ export default function DonadaPlatform() {
 
   // On-chain NFT stats (total supply + open rental listings)
   const [nftStats, setNftStats] = useState<{ total: number; openRentals: number; activeRentals: number; expiredRentals: number } | null>(null);
-  // Featured image — first NFT under the policy, loaded from on-chain metadata
+  // Featured image + collection name — first NFT under the policy, loaded from on-chain metadata
   const [featuredNftImage, setFeaturedNftImage] = useState<string | null>(null);
+  const [collectionName, setCollectionName] = useState<string>(COLLECTION_FALLBACK);
 
   // Theme
   const [isDarkMode, setIsDarkMode] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -1018,6 +608,14 @@ export default function DonadaPlatform() {
 
   // Invalidate caches whenever the network changes so addresses are re-derived
   useEffect(() => { _validatorCache = null; _lucidCachePromise = null; _lucidCacheNetwork = null; }, [network]);
+
+  // Auto-close the connect prompt once a wallet successfully connects
+  useEffect(() => {
+    if (connectedWallet && showConnectPrompt) {
+      setShowConnectPrompt(false);
+      setPromptWallets([]);
+    }
+  }, [connectedWallet, showConnectPrompt]);
 
   // ----- Fetch on-chain NFT stats -----
   useEffect(() => {
@@ -1048,24 +646,27 @@ export default function DonadaPlatform() {
           });
           if (assetRes.ok) {
             const assetData = await assetRes.json();
-            const rawImage = assetData.onchain_metadata?.image;
-            if (rawImage) {
+            const onchainMeta = assetData.onchain_metadata ?? {};
+            const rawImage = onchainMeta.image;
+            if (rawImage && !cancelled) {
               const flat = Array.isArray(rawImage) ? rawImage.join('') : String(rawImage);
-              const url  = flat.replace('ipfs://', 'https://ipfs.io/ipfs/');
-              if (!cancelled) setFeaturedNftImage(url);
+              setFeaturedNftImage(flat.replace('ipfs://', 'https://ipfs.io/ipfs/'));
+            }
+            if (onchainMeta.Collection && !cancelled) {
+              setCollectionName(String(onchainMeta.Collection));
             }
           }
         }
 
         // Open rental listings at the contract (no renter registered yet)
         const lucid = await initLucid(network);
-        const { contractAddress } = await loadRentalValidator(lucid);
+        const { contractAddress } = await loadRentalValidator(network);
         const utxos = await lucid.utxosAt(contractAddress);
         const now = BigInt(Date.now());
         let openRentals = 0, activeRentals = 0, expiredRentals = 0;
         for (const u of utxos) {
           try {
-            const d = decodeDatum(u, lucid);
+            const d = decodeDatum(u);
             if (d.draw_date <= now) { expiredRentals++; continue; }
             if (d.renter === null) openRentals++; else activeRentals++;
           } catch { /* skip malformed UTxOs */ }
@@ -1087,13 +688,13 @@ export default function DonadaPlatform() {
     const check = async () => {
       try {
         const lucid = await initLucid(network);
-        const { contractAddress } = await loadRentalValidator(lucid);
+        const { contractAddress } = await loadRentalValidator(network);
         const utxos = await lucid.utxosAt(contractAddress);
-        const walletPayHash = lucid.utils.getAddressDetails(fullWalletAddress).paymentCredential?.hash;
+        const walletPayHash = getAddressDetails(fullWalletAddress).paymentCredential?.hash;
         const hasAny = walletPayHash != null && utxos.some(u => {
           try {
-            const d = decodeDatum(u, lucid);
-            const ownerPayHash = lucid.utils.getAddressDetails(d.owner).paymentCredential?.hash;
+            const d = decodeDatum(u);
+            const ownerPayHash = getAddressDetails(d.owner).paymentCredential?.hash;
             return ownerPayHash === walletPayHash && d.renter === null;
           } catch { return false; }
         });
@@ -1112,27 +713,20 @@ export default function DonadaPlatform() {
     const fetchEntries = async () => {
       try {
         const lucid = await initLucid(network);
-        const { contractAddress } = await loadRentalValidator(lucid);
-        const { url: bfBase, apiKey: bfKey } = blockfrostConfig(network);
+        const { contractAddress } = await loadRentalValidator(network);
+        if (connectedWalletRef.current) selectWallet(lucid, connectedWalletRef.current.api);
 
         // All three sources run in parallel; each fails independently
         const [utxosResult, wpResult, holdingResult] = await Promise.allSettled([
           lucid.utxosAt(contractAddress),
           fetch('/data/wallet_participants.csv').then(r => r.text()),
           (async (): Promise<number> => {
-            try {
-              if (connectedWalletRef.current) {
-                const assets = await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets());
-                return (assets as NftAsset[]).filter(a => a.policyId === DONADA_POLICY_ID).length;
-              }
-            } catch { /* fall through to Blockfrost */ }
-            const res = await fetch(
-              `${bfBase}/addresses/${fullWalletAddress}/assets`,
-              { headers: { project_id: bfKey } },
-            );
-            if (!res.ok) return 0;
-            const data: Array<{ unit: string }> = await res.json();
-            return data.filter(a => a.unit.startsWith(DONADA_POLICY_ID)).length;
+            if (!connectedWalletRef.current) return 0;
+            // getUtxos() scans all wallet addresses via CIP-30
+            const walletUtxos = await lucid.wallet().getUtxos();
+            return walletUtxos.reduce((n, u) =>
+              n + Object.keys(u.assets).filter(unit => unit.startsWith(DONADA_POLICY_ID)).length
+            , 0);
           })(),
         ]);
 
@@ -1141,7 +735,7 @@ export default function DonadaPlatform() {
         if (utxosResult.status === 'fulfilled') {
           for (const u of utxosResult.value) {
             try {
-              const d = decodeDatum(u, lucid);
+              const d = decodeDatum(u);
               if (d.owner === fullWalletAddress) listed++;
               if (d.renter === fullWalletAddress) renting++;
             } catch { /* skip malformed */ }
@@ -1287,33 +881,23 @@ export default function DonadaPlatform() {
       return;
     }
     const detected = getAvailableWallets();
+    if (detected.length === 0) { setShowNoWalletModal(true); return; }
     setWallets(detected);
     if (detected.length === 1) connectWallet(detected[0].key);
   };
 
   const connectWallet = async (walletKey: string) => {
     try {
-      const wallet = await BrowserWallet.enable(walletKey);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const api = await (window as any).cardano[walletKey].enable();
-
-      // getUsedAddresses() returns empty if the wallet has only received funds
-      // (no outgoing txs). Fall back to unused addresses then change address.
-      const usedAddresses = await wallet.getUsedAddresses();
-      let fullAddress: string | null = usedAddresses?.[0] ?? null;
-      if (!fullAddress) {
-        const unused = await wallet.getUnusedAddresses();
-        fullAddress = unused?.[0] ?? null;
-      }
-      if (!fullAddress) {
-        fullAddress = await wallet.getChangeAddress();
-      }
-
-      setConnectedWallet({ name: walletKey, wallet, api });
-      setFullWalletAddress(fullAddress);
+      // makeWalletFromAPI decodes the CIP-30 address via CML (no provider needed)
+      const address = await makeWalletFromAPI({} as any, api as WalletApi).address();
+      setConnectedWallet({ name: walletKey, api });
+      setFullWalletAddress(address ?? null);
       setWallets([]);
     } catch (err) {
       console.error('Error connecting to wallet:', err);
+      raiseWalletNotice(err);
     }
   };
 
@@ -1322,18 +906,15 @@ export default function DonadaPlatform() {
     connectedWalletRef.current = connectedWallet;
   }, [connectedWallet]);
 
-  // Re-enables both the Mesh BrowserWallet and the raw CIP-30 API.
-  // Triggers the wallet extension's own unlock UI; returns true on success.
+  // Re-enables the CIP-30 API (triggers the wallet extension's unlock UI).
+  // Returns true on success.
   const refreshWallet = async (): Promise<boolean> => {
     const current = connectedWalletRef.current;
     if (!current) return false;
     try {
-      const [wallet, api] = await Promise.all([
-        BrowserWallet.enable(current.name),
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (window as any).cardano[current.name].enable(),
-      ]);
-      const updated = { ...current, wallet, api };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const api = await (window as any).cardano[current.name].enable();
+      const updated = { ...current, api };
       connectedWalletRef.current = updated;
       setConnectedWallet(updated);
       return true;
@@ -1342,7 +923,11 @@ export default function DonadaPlatform() {
     }
   };
 
-  const WALLET_LOCKED_MSG = 'Wallet is locked — unlock it in your extension and try again.';
+  const raiseWalletNotice = (err: unknown) => {
+    const code = (err as any)?.code;
+    if (code === -3) setWalletNotice('locked');
+    else if (code === -2) setWalletNotice('disconnected');
+  };
 
   // Runs op(); if it throws APIError code -3 (wallet locked), refreshes the
   // wallet (triggering the extension's unlock prompt) then retries once.
@@ -1374,12 +959,23 @@ export default function DonadaPlatform() {
 
   // ----- Owner: load their own NFTs then open listing modal -----
   const loadOwnedNftsForListing = async () => {
-    if (!connectedWalletRef.current) return;
+    if (!fullWalletAddress || !connectedWalletRef.current) return;
     setListingError(null);
     try {
       setLoadingOwnedNfts(true);
-      const assets = await withWalletRetry(() => connectedWalletRef.current!.wallet.getAssets());
-      const filtered = assets.filter((a: NftAsset) => POLICY_IDS.includes(a.policyId));
+      const lucid = await initLucid(network);
+      selectWallet(lucid, connectedWalletRef.current.api);
+      // getUtxos() returns all UTxOs across all wallet addresses (full CIP-30 scan)
+      const walletUtxos = await withWalletRetry(() => lucid.wallet().getUtxos());
+      const seen = new Set<string>();
+      const filtered: NftAsset[] = walletUtxos.flatMap(u =>
+        Object.keys(u.assets).filter(unit => {
+          if (!POLICY_IDS.some(p => unit.startsWith(p))) return false;
+          if (seen.has(unit)) return false;
+          seen.add(unit);
+          return true;
+        }).map(unit => ({ policyId: unit.slice(0, 56), assetName: toText(unit.slice(56)) } as NftAsset))
+      );
       const enriched = (await Promise.all(
         filtered.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName, network))
       )).map((r: any) =>
@@ -1392,7 +988,9 @@ export default function DonadaPlatform() {
       setShowRentModal(true);
     } catch (err) {
       console.error('Failed to load NFTs', err);
-      setListingError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : 'Failed to load your NFTs — try again.');
+      raiseWalletNotice(err);
+      const code = (err as any)?.code;
+      if (code !== -2 && code !== -3) setListingError('Failed to load your NFTs — try again.');
     } finally {
       setLoadingOwnedNfts(false);
     }
@@ -1400,19 +998,18 @@ export default function DonadaPlatform() {
 
   // ----- Renter: load available listings from the contract then open rent modal -----
   const loadListedNfts = async () => {
-    if (!connectedWallet) return;
     setRentError(null);
     try {
       setLoadingListedNfts(true);
       // Read-only Lucid — no wallet selection needed for querying UTxOs.
       const lucid = await initLucid(network);
-      const { contractAddress } = await loadRentalValidator(lucid);
+      const { contractAddress } = await loadRentalValidator(network);
       const utxos = await lucid.utxosAt(contractAddress);
 
       const available = utxos.flatMap((u) => {
         if (!u.datum) return [];
         try {
-          const datum = decodeDatum(u, lucid);
+          const datum = decodeDatum(u);
           if (datum.renter !== null) return [];                      // already rented
           if (datum.draw_date <= BigInt(Date.now())) return [];      // draw date passed
           return [{
@@ -1439,7 +1036,9 @@ export default function DonadaPlatform() {
       setShowRentModal(true);
     } catch (err) {
       console.error('Failed to load listed NFTs:', err);
-      setRentError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : 'Failed to load listings — try again.');
+      raiseWalletNotice(err);
+      const code = (err as any)?.code;
+      if (code !== -2 && code !== -3) setRentError('Failed to load listings — try again.');
     } finally {
       setLoadingListedNfts(false);
     }
@@ -1447,7 +1046,8 @@ export default function DonadaPlatform() {
 
   // ----- Owner: confirm listing modal → submit listing transaction -----
   const handleCreateListing = async ({ nft, rentalPrice }: { nft: NftAsset; rentalPrice: string }) => {
-    if (!fullWalletAddress || !nextDrawDate || !connectedWallet) return;
+    if (!connectedWallet) { closeModal(); setShowConnectPrompt(true); return; }
+    if (!fullWalletAddress || !nextDrawDate) return;
     closeModal();
     setIsListing(true);
     setListingError(null);
@@ -1455,8 +1055,8 @@ export default function DonadaPlatform() {
     try {
       const txHash = await withWalletRetry(async () => {
         const lucid = await initLucid(network);
-        selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-        const { contractAddress } = await loadRentalValidator(lucid);
+        selectWallet(lucid, connectedWalletRef.current!.api);
+        const { contractAddress } = await loadRentalValidator(network);
         return submitListing(
           nft.name ?? nft.assetName,
           fullWalletAddress,
@@ -1478,8 +1078,9 @@ export default function DonadaPlatform() {
       });
     } catch (err) {
       console.error('Failed to list NFT:', err);
-      const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
-      setListingError(msg);
+      raiseWalletNotice(err);
+      const code = (err as any)?.code;
+      if (code !== -2 && code !== -3) setListingError(errMsg(err));
     } finally {
       setIsListing(false);
     }
@@ -1487,7 +1088,8 @@ export default function DonadaPlatform() {
 
   // ----- Renter: confirm rent modal → submit rent transaction -----
   const handleRentNft = async ({ nft }: { nft: NftAsset; rentalPrice: string }) => {
-    if (!fullWalletAddress || !connectedWallet) return;
+    if (!connectedWallet) { closeModal(); setShowConnectPrompt(true); return; }
+    if (!fullWalletAddress) return;
     closeModal();
     setIsRenting(true);
     setRentError(null);
@@ -1495,13 +1097,18 @@ export default function DonadaPlatform() {
     try {
       const result = await withWalletRetry(async () => {
         const lucid = await initLucid(network);
-        selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-        const validator = await loadRentalValidator(lucid);
+        selectWallet(lucid, connectedWalletRef.current!.api);
+        const validator = await loadRentalValidator(network);
         return rentNft(nft.assetName, fullWalletAddress, validator, lucid);
       });
       setTxConfirm({ title: 'NFT Rented!', txHash: result.txHash });
       setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - 1), activeRentals: prev.activeRentals + 1 } : prev);
       setUserEntries(prev => prev ? { ...prev, renting: prev.renting + 1, total: prev.total + 1 } : prev);
+      const { url: bfUrl, apiKey: bfKey } = blockfrostConfig(network);
+      waitForTxOnChain(result.txHash, bfUrl, bfKey, () => {}).then(() => {
+        setTxConfirmedToast({ txHash: result.txHash });
+        setTimeout(() => setTxConfirmedToast(null), 8000);
+      }).catch(() => { /* confirmation timeout — silent */ });
       notifyRentalConfirmed({
         nftName: nft.name ?? nft.assetName,
         fee:     nft.rentalFee != null ? (Number(nft.rentalFee) / 1_000_000).toFixed(2) : '—',
@@ -1511,8 +1118,9 @@ export default function DonadaPlatform() {
       });
     } catch (err) {
       console.error('Failed to rent NFT:', err);
-      const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
-      setRentError(msg);
+      raiseWalletNotice(err);
+      const code = (err as any)?.code;
+      if (code !== -2 && code !== -3) setRentError(errMsg(err));
     } finally {
       setIsRenting(false);
     }
@@ -1525,14 +1133,12 @@ export default function DonadaPlatform() {
     setLoadingCancelListings(true);
     try {
       const lucid = await initLucid(network);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-      const { contractAddress } = await loadRentalValidator(lucid);
+      selectWallet(lucid, connectedWalletRef.current!.api);
+      const { contractAddress } = await loadRentalValidator(network);
       const utxos = await lucid.utxosAt(contractAddress);
       const raw = utxos.flatMap(u => {
         try {
-          const datum = decodeDatum(u, lucid);
+          const datum = decodeDatum(u);
           if (datum.owner !== fullWalletAddress || datum.renter !== null) return [];
           return [{ policyId: datum.nft_policy, assetName: datum.nft_asset_name, name: datum.nft_asset_name } as NftAsset];
         } catch { return []; }
@@ -1549,7 +1155,9 @@ export default function DonadaPlatform() {
       setShowCancelModal(true);
     } catch (err) {
       console.error('Failed to load cancellable listings:', err);
-      setCancelError((err as any)?.code === -3 ? WALLET_LOCKED_MSG : 'Failed to load listings — try again.');
+      raiseWalletNotice(err);
+      const code = (err as any)?.code;
+      if (code !== -2 && code !== -3) setCancelError('Failed to load listings — try again.');
     } finally {
       setLoadingCancelListings(false);
     }
@@ -1564,8 +1172,8 @@ export default function DonadaPlatform() {
     try {
       const result = await withWalletRetry(async () => {
         const lucid = await initLucid(network);
-        selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-        const validator = await loadRentalValidator(lucid);
+        selectWallet(lucid, connectedWalletRef.current!.api);
+        const validator = await loadRentalValidator(network);
         return cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
       });
       setTxConfirm({ title: 'Listing Cancelled!', txHash: result.txHash });
@@ -1583,8 +1191,9 @@ export default function DonadaPlatform() {
       } : prev);
     } catch (err) {
       console.error('Cancel failed:', err);
-      const msg = (err as any)?.code === -3 ? WALLET_LOCKED_MSG : errMsg(err);
-      setCancelError(msg);
+      raiseWalletNotice(err);
+      const code = (err as any)?.code;
+      if (code !== -2 && code !== -3) setCancelError(errMsg(err));
     } finally {
       setIsCancelling(false);
     }
@@ -1615,11 +1224,9 @@ export default function DonadaPlatform() {
 
     try {
       const lucid = await initLucid(network);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
+      selectWallet(lucid, connectedWalletRef.current!.api);
 
-      const { contractAddress } = await loadRentalValidator(lucid);
+      const { contractAddress } = await loadRentalValidator(network);
 
       // Each source produces independent tickets. The same address can hold
       // multiple entries (one per NFT owned, one per rental, one as a wallet
@@ -1637,7 +1244,7 @@ export default function DonadaPlatform() {
       const utxos = await lucid.utxosAt(contractAddress);
       const rentalParticipants: DrawParticipant[] = utxos.flatMap(u => {
         try {
-          const datum = decodeDatum(u, lucid);
+          const datum = decodeDatum(u);
           return [{ source: 'rental' as const, address: datum.owner, assetId: datum.nft_asset_name, rental: { utxo: u, datum } }];
         } catch { return []; }
       });
@@ -1775,14 +1382,14 @@ export default function DonadaPlatform() {
       }
 
       // ── Build and submit payout transaction ───────────────────────────────────
-      let tx = lucid.newTx().payToAddress(winner.address, { lovelace: ownerShare });
+      let tx = lucid.newTx().pay.ToAddress(winner.address, { lovelace: ownerShare });
       if (activeRenter) {
-        tx = tx.payToAddress(activeRenter, { lovelace: renterShare });
+        tx = tx.pay.ToAddress(activeRenter, { lovelace: renterShare });
       }
       tx = tx.addSigner(fullWalletAddress);
 
       const built  = await tx.complete();
-      const signed = await built.sign().complete();
+      const signed = await built.sign.withWallet().complete();
       const txHash = await signed.submit();
 
       log(`Done! Payout tx: ${txHash}`);
@@ -1799,9 +1406,9 @@ export default function DonadaPlatform() {
       try {
         // Fresh lucid instance ensures clean Blockfrost UTxO state (not stale from payout tx)
         const claimLucid = await initLucid(network);
-        const claimValidator = await loadRentalValidator(claimLucid);
+        const claimValidator = await loadRentalValidator(network);
         const claimedHashes = await withWalletRetry(async () => {
-          selectAndPatchWallet(claimLucid, connectedWalletRef.current!.api);
+          selectWallet(claimLucid, connectedWalletRef.current!.api);
           return claimBackExpiredRentals(
             fullWalletAddress,
             claimValidator,
@@ -1834,10 +1441,10 @@ export default function DonadaPlatform() {
     setClaimBackError(null);
     try {
       const lucid = await initLucid(network);
-      selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
-      const validator = await loadRentalValidator(lucid);
+      selectWallet(lucid, connectedWalletRef.current!.api);
+      const validator = await loadRentalValidator(network);
       await withWalletRetry(async () => {
-        selectAndPatchWallet(lucid, connectedWalletRef.current!.api);
+        selectWallet(lucid, connectedWalletRef.current!.api);
         return claimBackExpiredRentals(
           fullWalletAddress,
           validator,
@@ -1860,8 +1467,7 @@ export default function DonadaPlatform() {
     setHolderPreview(null);
     setHolderSyncError(null);
     try {
-      const lucid = await initLucid(network);
-      const { contractAddress } = await loadRentalValidator(lucid);
+      const { contractAddress } = await loadRentalValidator(network);
       const { url: blockfrostBase, apiKey: blockfrostKey } = blockfrostConfig(network);
       const holders = await fetchLiveNftHolders(
         blockfrostBase,
@@ -1896,7 +1502,23 @@ export default function DonadaPlatform() {
               setIsDimming(false);
             }, 150);
           }}>
-            {isDarkMode ? '[dark]' : '[light]'}
+            {isDarkMode ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5"/>
+                <line x1="12" y1="1" x2="12" y2="3"/>
+                <line x1="12" y1="21" x2="12" y2="23"/>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                <line x1="1" y1="12" x2="3" y2="12"/>
+                <line x1="21" y1="12" x2="23" y2="12"/>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+              </svg>
+            )}
           </button>
         </div>
 
@@ -1907,7 +1529,7 @@ export default function DonadaPlatform() {
               onClick={handleSignBtnClick}
               disabled={signBtnAnim !== 'idle'}
             >
-              {connectedWallet ? 'Disconnect Wallet' : 'Sign in with Wallet'}
+              {connectedWallet ? 'Disconnect Wallet' : 'Sign In'}
             </button>
           </div>
 
@@ -1916,6 +1538,21 @@ export default function DonadaPlatform() {
           </span>
         </div>
       </header>
+
+      {walletNotice && (
+        <div className="wallet-notice" role="alert">
+          <button className="wallet-notice-close" onClick={() => setWalletNotice(null)}>✕</button>
+          <p className="wallet-notice-title">Wallet Connection Issue</p>
+          <p className="wallet-notice-body">
+            {walletNotice === 'locked'
+              ? 'Your wallet is locked. Please unlock it and refresh the page to reconnect.'
+              : 'The wallet connection was lost. Please reconnect the dApp in your wallet extension, then refresh the page.'}
+          </p>
+          <button className="wallet-notice-refresh" onClick={() => window.location.reload()}>
+            Refresh Page
+          </button>
+        </div>
+      )}
 
       {wallets.length > 1 && !connectedWallet && (
         <div className="wallet-list">
@@ -1943,11 +1580,11 @@ export default function DonadaPlatform() {
               <div className="nft-image-frame">
                 <div className={`nft-image-inner${featuredNftImage ? ' has-image' : ''}`}>
                   {featuredNftImage
-                    ? <img src={featuredNftImage} alt={COLLECTION_NAME} />
+                    ? <img src={featuredNftImage} alt={collectionName} />
                     : 'NFT IMAGE'}
                 </div>
                 <div className="nft-details">
-                  <p className="mint-name">Collection: {COLLECTION_NAME}</p>
+                  <p className="mint-name">Collection: {collectionName}</p>
                   <p className="policy-id" title={DONADA_POLICY_ID}>
                     Policy ID: {DONADA_POLICY_ID.slice(0, 10)}…{DONADA_POLICY_ID.slice(-8)}
                   </p>
@@ -2035,7 +1672,7 @@ export default function DonadaPlatform() {
                 <div className="action-text">Browse Rental Listings</div>
                 <button
                   className="select-btn small"
-                  disabled={!connectedWallet || !countdown || loadingListedNfts || isRenting}
+                  disabled={!countdown || loadingListedNfts || isRenting}
                   onClick={loadListedNfts}
                 >
                   {loadingListedNfts ? 'Loading...' : isRenting ? 'Renting...' : 'select'}
@@ -2202,6 +1839,18 @@ export default function DonadaPlatform() {
               Error: {claimBackError}
             </p>
           )}
+
+          <hr className="section-break" style={{ margin: '1rem 0' }} />
+
+          <div className="action-block">
+            <div className="action-text">Preview No-Wallet Popup</div>
+            <button
+              className="select-btn small"
+              onClick={() => setShowNoWalletModal(true)}
+            >
+              Preview
+            </button>
+          </div>
         </section>
       )}
 
@@ -2232,6 +1881,92 @@ export default function DonadaPlatform() {
         network={network}
         onClose={() => setTxConfirm(null)}
       />
+
+      {showConnectPrompt && (
+        <div className="connect-prompt-overlay" onClick={() => { setShowConnectPrompt(false); setPromptWallets([]); }}>
+          <div className="connect-prompt" onClick={e => e.stopPropagation()}>
+            <button className="connect-prompt-close" onClick={() => { setShowConnectPrompt(false); setPromptWallets([]); }}>✕</button>
+            <p className="connect-prompt-title">Connect your wallet</p>
+            {promptWallets.length === 0 ? (
+              <>
+                <p className="connect-prompt-body">You need to connect a wallet before renting an NFT.</p>
+                <button
+                  className="connect-prompt-btn"
+                  onClick={() => {
+                    const detected = getAvailableWallets();
+                    if (detected.length === 1) {
+                      connectWallet(detected[0].key);
+                    } else {
+                      setPromptWallets(detected);
+                    }
+                  }}
+                >
+                  Connect Wallet
+                </button>
+              </>
+            ) : (
+              <div className="connect-prompt-wallet-list">
+                {promptWallets.map(w => (
+                  <button
+                    key={w.key}
+                    className="wallet-icon-btn"
+                    onClick={() => connectWallet(w.key)}
+                    style={{ '--wallet-color': WALLET_BRAND_COLORS[w.key.toLowerCase()] ?? '#111' } as React.CSSProperties}
+                  >
+                    {w.icon
+                      ? <img src={w.icon} alt={w.name} />
+                      : <span className="wallet-icon-btn__fallback">{w.name.slice(0, 2).toUpperCase()}</span>
+                    }
+                    <span className="wallet-icon-btn__name">{w.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {txConfirmedToast && (
+        <div className="tx-toast">
+          <span className="tx-toast-icon">✓</span>
+          <span className="tx-toast-text">Transaction confirmed on-chain</span>
+          <a
+            className="tx-toast-link"
+            href={`https://${network === 'Mainnet' ? '' : 'preview.'}cardanoscan.io/transaction/${txConfirmedToast.txHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            View
+          </a>
+          <button className="tx-toast-close" onClick={() => setTxConfirmedToast(null)}>✕</button>
+        </div>
+      )}
+
+      {showNoWalletModal && (
+        <div className="connect-prompt-overlay" onClick={() => setShowNoWalletModal(false)}>
+          <div className="connect-prompt" onClick={e => e.stopPropagation()}>
+            <button className="connect-prompt-close" onClick={() => setShowNoWalletModal(false)}>✕</button>
+            <p className="connect-prompt-title">No Wallet Detected</p>
+            <p className="connect-prompt-body">
+              No Cardano wallet extension was found in your browser. Install one to get started.
+            </p>
+            <div className="no-wallet-links">
+              {WALLET_DOWNLOADS.map(({ key, name, url }) => (
+                <a
+                  key={key}
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="no-wallet-link"
+                  style={{ '--wallet-color': WALLET_BRAND_COLORS[key] ?? '#111' } as React.CSSProperties}
+                >
+                  {name}
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

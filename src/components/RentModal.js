@@ -23,6 +23,7 @@ export default function RentModal({
   const [activeIndex, setActiveIndex] = useState(0);
   const [rentalPrice, setRentalPrice] = useState('');
   const [sortBy, setSortBy] = useState('price-asc');
+  const [showRentInfo, setShowRentInfo] = useState(false);
   const touchRef = useRef({ startX: 0 });
 
   // Reset state when modal opens or NFTs change
@@ -117,7 +118,35 @@ export default function RentModal({
         className="modal-sheet"
         onClick={(e) => e.stopPropagation()}
       >
-        <h3>{mode === 'cancel' ? 'Cancel Listing' : 'Select NFT to Rent'}</h3>
+        <div className="modal-title-row">
+          <h3>{mode === 'cancel' ? 'Cancel Listing' : 'Select NFT to Rent'}</h3>
+          {mode !== 'cancel' && (
+            <button className="rent-info-btn" onClick={() => setShowRentInfo(true)}>?</button>
+          )}
+        </div>
+
+        {showRentInfo && (
+          <div className="rent-info-overlay" onClick={() => setShowRentInfo(false)}>
+            <div className="rent-info-card" onClick={e => e.stopPropagation()}>
+              <button className="rent-info-close" onClick={() => setShowRentInfo(false)}>✕</button>
+              {mode === 'rent' ? (
+                <>
+                  <h4>How Rentals Work</h4>
+                  <p>Pay the listed rental fee to register your wallet as an entry for the upcoming draw.</p>
+                  <p>Your rental — and your entry — lasts until the draw date shown. When the draw fires, a winner is selected at random from all active renters and NFT holders.</p>
+                  <p>Prize payouts are automatic and on-chain. If the draw passes without a renter, the NFT is returned to its owner.</p>
+                </>
+              ) : (
+                <>
+                  <h4>How Listing Works</h4>
+                  <p>Set a rental fee and your NFT is locked at the contract address, open for any renter to claim before the draw.</p>
+                  <p>When someone rents it, the entry becomes shared — if it wins, the prize is split 90% to the renter and 10% to you as the owner.</p>
+                  <p>You can cancel the listing at any time before it is rented. After the draw, all NFTs on the contract — rented or not — are returned to their owners automatically.</p>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {mode === 'rent' && nfts.length > 1 && (
           <div className="sort-controls">
@@ -134,7 +163,9 @@ export default function RentModal({
         )}
 
         {sortedNfts.length === 0 && (
-          <p>No NFTs available for this policy.</p>
+          <p style={{ textAlign: 'center', opacity: 0.6, padding: '24px 0' }}>
+            No listings available right now.
+          </p>
         )}
 
         {visibleItems.length > 0 && (

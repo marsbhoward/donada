@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { BrowserWallet } from '@meshsdk/core';
 
 
 function SignIn(props){
