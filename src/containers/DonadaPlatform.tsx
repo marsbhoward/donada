@@ -15,7 +15,7 @@ import {
 // ── Contract constants ────────────────────────────────────────────────────────
 
 // Legacy policy ID (DonodaNFT001–003): 21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a
-const DONADA_POLICY_ID   = '474b3f587a9eca8fecd1c0525f61e63e5124b0ec535a3b70072ea5de';
+const DONADA_POLICY_ID   = 'f3cfe3e83aa282cde0f6d67e79860ccaa55969a4b685db614055fc2f';
 
 const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
@@ -598,6 +598,8 @@ export default function DonadaPlatform() {
   const [isDarkMode, setIsDarkMode] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   const [isDimming, setIsDimming] = useState(false);
   const [signBtnAnim, setSignBtnAnim] = useState<'idle' | 'out' | 'in'>('idle');
+  const [logoDropdownOpen, setLogoDropdownOpen] = useState(false);
+  const logoDropdownRef = useRef<HTMLDivElement>(null);
 
   // Connected wallet's total raffle entries across all sources
   const [userEntries, setUserEntries] = useState<{
@@ -905,6 +907,20 @@ export default function DonadaPlatform() {
   useEffect(() => {
     connectedWalletRef.current = connectedWallet;
   }, [connectedWallet]);
+
+  useEffect(() => {
+    const handleOutside = (e: MouseEvent | TouchEvent) => {
+      if (logoDropdownRef.current && !logoDropdownRef.current.contains(e.target as Node)) {
+        setLogoDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('touchstart', handleOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('touchstart', handleOutside);
+    };
+  }, []);
 
   // Re-enables the CIP-30 API (triggers the wallet extension's unlock UI).
   // Returns true on success.
@@ -1488,13 +1504,21 @@ export default function DonadaPlatform() {
   return (
     <div className={`app-container${isDarkMode ? ' dark-mode' : ''}${isDimming ? ' dimming' : ''}`}>
       <header className="header">
-        <div className="logo-group">
-          <h1 className="logo">
-            <a href="https://donada.io" target="_blank" rel="noopener noreferrer">
-              <span style={isDarkMode ? { color: 'transparent', WebkitTextStroke: '1px #ffffff' } : {}}>DON</span>
-              <span style={isDarkMode ? {} : { color: 'transparent', WebkitTextStroke: '1px #1d1d1f' }}>ADA</span>
-            </a>
-          </h1>
+        <div className="logo-group" ref={logoDropdownRef}>
+          <button className="logo" onClick={() => setLogoDropdownOpen(o => !o)}>
+            <img src="/Donada_Logo.png" alt="DONADA" className="logo-img" />
+            <span><span className="logo-don">DON</span><span className="logo-ada">ADA</span></span>
+          </button>
+          {logoDropdownOpen && (
+            <div className="logo-dropdown">
+              <a className="logo-dropdown-item" href="https://donada.io">DONADA</a>
+              <span className="logo-dropdown-item logo-dropdown-active">DONADA App <span className="logo-dropdown-dot" /></span>
+              <a className="logo-dropdown-item" href="https://mint.donada.io">DONADA Mint</a>
+            </div>
+          )}
+        </div>
+
+        <div className="user-controls">
           <button className="theme-toggle" onClick={() => {
             setIsDimming(true);
             setTimeout(() => {
@@ -1520,9 +1544,6 @@ export default function DonadaPlatform() {
               </svg>
             )}
           </button>
-        </div>
-
-        <div className="user-controls">
           <div className="sign-btn-wrapper">
             <button
               className={`select-btn sign-btn-${signBtnAnim}`}

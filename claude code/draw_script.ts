@@ -55,7 +55,7 @@ const BLOCKFROST_KEY = NETWORK === 'Preview'
   : (process.env.REACT_APP_BlockFrost_API_KEY_Mainnet ?? '');
 
 const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
-const DONADA_POLICY_ID       = '474b3f587a9eca8fecd1c0525f61e63e5124b0ec535a3b70072ea5de';
+const DONADA_POLICY_ID       = 'f3cfe3e83aa282cde0f6d67e79860ccaa55969a4b685db614055fc2f';
 
 const EMAILJS_SERVICE_ID  = process.env.REACT_APP_EMAILJS_SERVICE_ID  ?? '';
 const EMAILJS_TEMPLATE_ID = process.env.REACT_APP_EMAILJS_TEMPLATE_ID ?? '';
@@ -211,6 +211,38 @@ function loadScheduledDraw(): { date: Date; complete: boolean } | null {
   return incomplete[0] ?? null;
 }
 
+function appendNextDrawDate(completedDate: Date, collection: string): void {
+  // Compute next draw: 3 calendar months later at the same Chicago local time
+  const localParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', hour12: false,
+  }).formatToParts(completedDate);
+  const getNum = (t: string) => parseInt(localParts.find(p => p.type === t)?.value ?? '0');
+  let year  = getNum('year');
+  let month = getNum('month') + 3;
+  if (month > 12) { month -= 12; year += 1; }
+  const day    = getNum('day');
+  const hour   = getNum('hour') % 24;
+  const minute = getNum('minute');
+  const nextDate = parseChicagoTime(year, month, day, hour, minute);
+
+  // Format for CSV (Chicago local time, matching existing row style)
+  const fmtParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  }).formatToParts(nextDate);
+  const getStr   = (t: string) => fmtParts.find(p => p.type === t)?.value ?? '';
+  const dateStr  = `${getStr('year')}-${getStr('month')}-${getStr('day')}`;
+  const timeStr  = `${getStr('hour')}:${getStr('minute')}${getStr('dayPeriod').toUpperCase()}`;
+  const newRow   = `${collection},${dateStr},${timeStr},"n"`;
+
+  const existing = readFileSync(CSV_PATH, 'utf-8');
+  writeFileSync(CSV_PATH, existing.trimEnd() + '\n' + newRow + '\n');
+  console.log(`Auto-scheduled next draw: ${newRow}`);
+}
+
 function markDrawComplete(drawDate: Date, winnerAddress: string): void {
   const repoRoot = join(__dirname, '..');
   const drawMs   = drawDate.getTime();
@@ -230,6 +262,12 @@ function markDrawComplete(drawDate: Date, winnerAddress: string): void {
 
   const drawRow    = updatedDraw.find(line => { const p = parseCsvRowToUtc(line); return p && p.date.getTime() === drawMs; });
   const collection = drawRow ? drawRow.split(',')[0] : 'DONADA Test';
+
+  // Auto-schedule next draw 3 months out if no incomplete dates remain
+  const hasNextDraw = updatedDraw.some(line => { const p = parseCsvRowToUtc(line); return p && !p.complete; });
+  if (!hasNextDraw) {
+    appendNextDrawDate(drawDate, collection);
+  }
   const [y, mo, d] = new Date(drawMs).toISOString().slice(0, 10).split('-');
   const timeStr = (() => {
     const h = new Date(drawMs).getUTCHours();

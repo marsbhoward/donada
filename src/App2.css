@@ -198,10 +198,7 @@ font-weight:700;
 margin:0;
 }
 
-.logo a {
-  text-decoration: none;
-  color: inherit;
-}
+/* .logo a removed — logo is now a button */
 
 .user-controls{
 display:flex;
@@ -478,10 +475,7 @@ font-weight:700;
 margin:0;
 }
 
-.logo a {
-  text-decoration: none;
-  color: inherit;
-}
+/* .logo a removed — logo is now a button */
 
 .user-controls{
 display:flex;
@@ -1316,9 +1310,7 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 }
 
 /* Extra breathing room between DONADA link and the toggle beneath it (+25%) */
-.logo-group .logo {
-  padding-bottom: 8px;
-}
+/* logo-group .logo padding-bottom removed — now row layout */
 
 /* Sign-in button slide transition */
 @keyframes sign-slide-out {
@@ -1334,10 +1326,9 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .sign-btn-out { animation: sign-slide-out 0.28s ease forwards; }
 .sign-btn-in  { animation: sign-slide-in  0.28s ease forwards; }
 
-/* Clip slide animation within the button only — label position unaffected */
+/* Clip slide animation within the button only */
 .sign-btn-wrapper {
   overflow: hidden;
-  margin-top: -6px;
 }
 
 /* Override: dim overlay must cover the full non-active frame */
@@ -1346,30 +1337,159 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   bottom: 0;
 }
 
-/* ── Header: two-column flex, full height so toggle can sit at the bottom ── */
+/* ── Header ──────────────────────────────────────────────────────────────── */
 .header {
   display: flex !important;
   justify-content: space-between !important;
-  align-items: stretch !important;
+  align-items: center !important;
   padding: 20px 20px !important;
 }
 
-/* DONADA at top, [light]/[dark] pushed to the bottom of the header */
 .logo-group {
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
   align-items: center;
-  gap: 0;
+  position: relative;
 }
 
-/* Sign-in button at top, wallet label pushed to the bottom — mirrors logo-group */
+.logo {
+  font-size: 1rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.1em;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+}
+
+.logo-img {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: block;
+  flex-shrink: 0;
+}
+
+/* Light: ADA outlined, DON solid */
+.logo-ada {
+  color: transparent;
+  -webkit-text-stroke: 1.5px var(--text-primary, #1d1d1f);
+}
+
+/* Dark: DON outlined, ADA solid */
+.dark-mode .logo-don {
+  color: transparent;
+  -webkit-text-stroke: 1.5px rgba(255,255,255,0.85);
+}
+
+.dark-mode .logo-ada {
+  color: inherit;
+  -webkit-text-stroke: 0;
+}
+
+/* Liquid glass logo dropdown */
+/* Light mode (default) */
+.logo-dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: 0;
+  border-radius: 12px;
+  padding: 6px 0;
+  min-width: 160px;
+  z-index: 100;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.42) 55%, rgba(255,255,255,0.64) 100%);
+  backdrop-filter: blur(32px) saturate(2.0) brightness(1.06);
+  -webkit-backdrop-filter: blur(32px) saturate(2.0) brightness(1.06);
+  border: 1px solid rgba(255,255,255,0.80);
+  border-top-color: rgba(255,255,255,1);
+  border-left-color: rgba(255,255,255,0.90);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,1),
+    inset 1px 0 0 rgba(255,255,255,0.70),
+    inset 0 -1px 0 rgba(255,255,255,0.30),
+    0 8px 32px rgba(0,0,0,0.09),
+    0 2px 5px rgba(0,0,0,0.06);
+}
+
+.logo-dropdown::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.18) 30%, transparent 60%);
+  pointer-events: none;
+}
+
+/* Dark mode */
+.dark-mode .logo-dropdown {
+  background: linear-gradient(160deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 55%, rgba(255,255,255,0.10) 100%);
+  backdrop-filter: blur(32px) saturate(2.2) brightness(1.08);
+  -webkit-backdrop-filter: blur(32px) saturate(2.2) brightness(1.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-top-color: rgba(255,255,255,0.38);
+  border-left-color: rgba(255,255,255,0.22);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.45),
+    inset 1px 0 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(255,255,255,0.05),
+    0 8px 32px rgba(0,0,0,0.28),
+    0 2px 6px rgba(0,0,0,0.16);
+}
+
+.dark-mode .logo-dropdown::before {
+  background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.06) 30%, transparent 60%);
+}
+
+.logo-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.logo-dropdown-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.dark-mode .logo-dropdown-item:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.logo-dropdown-active {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+
+.logo-dropdown-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+/* user-controls: row layout with theme toggle to the left of sign-in */
 .user-controls {
   display: flex !important;
-  flex-direction: column !important;
+  flex-direction: row !important;
   align-items: center !important;
-  justify-content: space-between !important;
-  gap: 0 !important;
+  justify-content: flex-end !important;
+  gap: 16px !important;
   max-width: none !important;
 }
 
@@ -1379,9 +1499,9 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   border: 1.5px solid var(--btn-border);
   border-radius: 9999px;
   padding: 5px 14px;
-  margin: 0 0 8px 0;
-  font-size: 1.1rem;
-  font-weight: 700;
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
   font-family: inherit;
   color: inherit;
   cursor: pointer;
@@ -1390,7 +1510,7 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   width: auto;
 }
 
-/* Wallet label — same dim styling as the theme toggle, sits at the bottom */
+/* Wallet label */
 .user-label {
   font-size: 0.68rem !important;
   opacity: 0.5;
@@ -1420,18 +1540,23 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   opacity: 1;
 }
 
-.theme-toggle:focus {
+.theme-toggle:focus,
+button:focus {
   outline: none;
 }
 
-/* Disabled state — clearly inactive regardless of mode */
+button:focus-visible {
+  outline: 3px solid rgba(0,0,0,0.08);
+}
+
+/* Disabled state */
 .select-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
   pointer-events: none;
 }
 
-/* All select-btn hover: solid fill in both modes */
+/* select-btn hover: solid fill in both modes */
 .select-btn:hover {
   background: #111111;
   color: #ffffff !important;
@@ -1454,6 +1579,11 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   background: #ffffff;
   color: #000000;
   border-color: #ffffff;
+}
+
+/* sign-btn-wrapper: clip slide animation */
+.sign-btn-wrapper {
+  overflow: hidden;
 }
 
 /* App container always fills full viewport */
@@ -1873,41 +2003,102 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   background: rgba(13,13,13,0.85) !important;
 }
 
-/* Entries panel — exact landing .glass values in dark, frosted white in light */
+/* Entries panel — liquid glass */
 .entries-panel {
-  background: rgba(255,255,255,0.72);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.42) 55%, rgba(255,255,255,0.64) 100%);
+  backdrop-filter: blur(32px) saturate(2.0) brightness(1.06);
+  -webkit-backdrop-filter: blur(32px) saturate(2.0) brightness(1.06);
   border: 1px solid rgba(255,255,255,0.80);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.95), 0 2px 12px rgba(0,0,0,0.06);
+  border-top-color: rgba(255,255,255,1);
+  border-left-color: rgba(255,255,255,0.90);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,1),
+    inset 1px 0 0 rgba(255,255,255,0.70),
+    inset 0 -1px 0 rgba(255,255,255,0.30),
+    0 8px 32px rgba(0,0,0,0.09),
+    0 2px 5px rgba(0,0,0,0.06);
+}
+.entries-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.18) 30%, transparent 60%);
+  border-radius: inherit;
+  pointer-events: none;
 }
 .dark-mode .entries-panel {
-  background: rgba(255,255,255,0.04);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  border: 1px solid rgba(255,255,255,0.25);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+  background: linear-gradient(160deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 55%, rgba(255,255,255,0.10) 100%);
+  backdrop-filter: blur(32px) saturate(2.2) brightness(1.08);
+  -webkit-backdrop-filter: blur(32px) saturate(2.2) brightness(1.08);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-top-color: rgba(255,255,255,0.38);
+  border-left-color: rgba(255,255,255,0.22);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.45),
+    inset 1px 0 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(255,255,255,0.05),
+    0 8px 32px rgba(0,0,0,0.22),
+    0 2px 6px rgba(0,0,0,0.14);
+}
+.dark-mode .entries-panel::before {
+  background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.06) 30%, transparent 60%);
 }
 
-/* Modal sheet — subtle frosted surface in light mode */
+/* Modal sheet — liquid glass light */
 .modal-sheet {
-  background: rgba(255,255,255,0.94);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.42) 55%, rgba(255,255,255,0.64) 100%);
+  backdrop-filter: blur(32px) saturate(2.0) brightness(1.06);
+  -webkit-backdrop-filter: blur(32px) saturate(2.0) brightness(1.06);
   border: 1px solid rgba(255,255,255,0.80);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.95), 0 24px 48px rgba(0,0,0,0.10), 0 2px 8px rgba(0,0,0,0.05);
+  border-top-color: rgba(255,255,255,1);
+  border-left-color: rgba(255,255,255,0.90);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,1),
+    inset 1px 0 0 rgba(255,255,255,0.70),
+    inset 0 -1px 0 rgba(255,255,255,0.30),
+    0 24px 48px rgba(0,0,0,0.10),
+    0 2px 8px rgba(0,0,0,0.05);
+}
+.modal-sheet::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.18) 30%, transparent 60%);
+  border-radius: inherit;
+  pointer-events: none;
 }
 
-/* Modal sheet dark — lifted surface matching landing card style */
+/* Modal sheet dark */
 .dark-mode .modal-sheet {
-  background: linear-gradient(145deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.04) 100%);
-  border: 1px solid rgba(255,255,255,0.12);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 24px 48px rgba(0,0,0,0.55);
+  background: linear-gradient(160deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 55%, rgba(255,255,255,0.10) 100%);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-top-color: rgba(255,255,255,0.38);
+  border-left-color: rgba(255,255,255,0.22);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.45),
+    inset 1px 0 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(255,255,255,0.05),
+    0 24px 48px rgba(0,0,0,0.55),
+    0 2px 6px rgba(0,0,0,0.14);
+}
+.dark-mode .modal-sheet::before {
+  background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0.06) 30%, transparent 60%);
 }
 
-/* Connect prompt dark — mirrors .dark-mode .modal-sheet */
+/* Connect prompt dark */
 .dark-mode .connect-prompt {
-  background: linear-gradient(145deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.04) 100%);
-  border: 1px solid rgba(255,255,255,0.12);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10), 0 24px 48px rgba(0,0,0,0.55);
+  background: linear-gradient(160deg, rgba(255,255,255,0.16) 0%, rgba(255,255,255,0.04) 55%, rgba(255,255,255,0.10) 100%);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-top-color: rgba(255,255,255,0.38);
+  border-left-color: rgba(255,255,255,0.22);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.45),
+    inset 1px 0 0 rgba(255,255,255,0.14),
+    0 24px 48px rgba(0,0,0,0.55);
   color: #f5f5f5;
 }
 
@@ -1919,3 +2110,43 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 }
 .dark-mode .carousel-overlay-fee  { color: #f5f5f5; }
 .dark-mode .carousel-overlay-count { color: #888; }
+
+/* ── Grain texture overlay ───────────────────────────────────────────────── */
+
+.app-container::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 220px;
+  opacity: 0.018;
+}
+.app-container.dark-mode::after { opacity: 0.035; }
+
+/* ── Amber accent ────────────────────────────────────────────────────────── */
+
+:root { --amber: #c49a2f; }
+.dark-mode { --amber: #c49a2f; }
+
+/* ── Card hover lift ─────────────────────────────────────────────────────── */
+
+.entries-panel,
+.modal-sheet {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.dark-mode .entries-panel {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+.dark-mode .entries-panel:hover {
+  transform: translateY(-3px);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.55),
+    inset 1px 0 0 rgba(255,255,255,0.20),
+    inset 0 -1px 0 rgba(255,255,255,0.08),
+    0 16px 48px rgba(0,0,0,0.30),
+    0 4px 10px rgba(0,0,0,0.18);
+}
