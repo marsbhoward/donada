@@ -43,7 +43,7 @@ const __dirname  = dirname(__filename);
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const NETWORK  = (process.env.NETWORK ?? 'Preview') as 'Preview' | 'Mainnet';
+const NETWORK  = (process.env.NETWORK ?? 'Mainnet') as 'Preview' | 'Mainnet';
 const SEED     = (process.env.OWNER_SEED_PHRASE ?? '').replace(/^["']|["']$/g, '').replace(/\s+/g, ' ').trim();
 
 const BLOCKFROST_URL = NETWORK === 'Preview'
@@ -54,7 +54,9 @@ const BLOCKFROST_KEY = NETWORK === 'Preview'
   ? (process.env.REACT_APP_BlockFrost_API_KEY_Preview ?? '')
   : (process.env.REACT_APP_BlockFrost_API_KEY_Mainnet ?? '');
 
-const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
+const PROJECT_WALLET_ADDRESS = NETWORK === 'Mainnet'
+  ? 'addr1q8nt3e6qwx56e2t7qqv5va396dcdut0s3ytzty8ae040g746ha2ue745hcqxzy9qcrfa08u4yl67p9y7wm9nn7g3e06sjy8q0s'
+  : 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
 const DONADA_POLICY_ID       = 'f3cfe3e83aa282cde0f6d67e79860ccaa55969a4b685db614055fc2f';
 
 const EMAILJS_SERVICE_ID  = process.env.REACT_APP_EMAILJS_SERVICE_ID  ?? '';

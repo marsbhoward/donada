@@ -20,7 +20,10 @@ const DONADA_POLICY_ID   = 'f3cfe3e83aa282cde0f6d67e79860ccaa55969a4b685db614055
 const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
 const POLICY_IDS         = [DONADA_POLICY_ID, PARTNER_POLICY_ID].filter(Boolean) as string[];
-const PROJECT_WALLET_ADDRESS = 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
+const PROJECT_WALLET: Record<string, string> = {
+  Mainnet: 'addr1q8nt3e6qwx56e2t7qqv5va396dcdut0s3ytzty8ae040g746ha2ue745hcqxzy9qcrfa08u4yl67p9y7wm9nn7g3e06sjy8q0s',
+  Preview: 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388',
+};
 
 // ── Validator loader — derives contract address from compiled plutus.json ─────
 
@@ -218,7 +221,8 @@ async function submitListing(
   rental_fee_ada: string | number,
   drawDateMs: number,
   contractAddress: string,
-  lucid: LucidEvolution
+  lucid: LucidEvolution,
+  network: Network
 ): Promise<string> {
   const datum: RentalDatum = {
     nft_policy:     DONADA_POLICY_ID,
@@ -227,7 +231,7 @@ async function submitListing(
     renter:         null,
     rental_fee:     adaToLovelace(rental_fee_ada),
     draw_date:      BigInt(drawDateMs),
-    project_wallet: PROJECT_WALLET_ADDRESS,
+    project_wallet: PROJECT_WALLET[network],
   };
 
   const tx = await lucid
@@ -519,8 +523,8 @@ function getAvailableWallets(): WalletInfo[] {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DonadaPlatform() {
-  // Network (toggled in admin panel; defaults to Preview for testnet)
-  const [network, setNetwork] = useState<Network>('Preview');
+  // Network (toggled in admin panel; defaults to Mainnet for production)
+  const [network, setNetwork] = useState<Network>('Mainnet');
 
   // Draw date / countdown
   const [nextDrawDate, setNextDrawDate] = useState<Date | null>(null);
@@ -1079,7 +1083,8 @@ export default function DonadaPlatform() {
           rentalPrice,
           Math.floor(nextDrawDate.getTime()),
           contractAddress,
-          lucid
+          lucid,
+          network
         );
       });
       setTxConfirm({ title: 'Listing Created!', txHash });
@@ -1272,7 +1277,7 @@ export default function DonadaPlatform() {
       const nftHolderRows = await fetchLiveNftHolders(
         blockfrostBase,
         blockfrostKey,
-        new Set([contractAddress, PROJECT_WALLET_ADDRESS]),
+        new Set([contractAddress, PROJECT_WALLET[network]]),
       );
 
       // ── Source 3: wallet participants (address only, no asset_id) ─────────────
@@ -1488,7 +1493,7 @@ export default function DonadaPlatform() {
       const holders = await fetchLiveNftHolders(
         blockfrostBase,
         blockfrostKey,
-        new Set([contractAddress, PROJECT_WALLET_ADDRESS]),
+        new Set([contractAddress, PROJECT_WALLET[network]]),
       );
       const uniqueAddresses = new Set(holders.map(h => h.address)).size;
       setHolderPreview(`${holders.length} ticket(s) across ${uniqueAddresses} wallet(s)`);
@@ -1688,7 +1693,7 @@ export default function DonadaPlatform() {
               </div>
             </div>
 
-            {fullWalletAddress !== PROJECT_WALLET_ADDRESS && <div className="right-section">
+            {fullWalletAddress !== PROJECT_WALLET[network] && <div className="right-section">
               <div className="action-block">
                 <div className="action-text">Browse Rental Listings</div>
                 <button
@@ -1756,7 +1761,7 @@ export default function DonadaPlatform() {
             </div>}
           </div>
         </div>
-      {fullWalletAddress === PROJECT_WALLET_ADDRESS && (
+      {fullWalletAddress === PROJECT_WALLET[network] && (
         <section className="admin-draw">
           <h3>Admin — Execute Draw</h3>
           {nftStats != null && (

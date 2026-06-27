@@ -1,7 +1,7 @@
 name: Execute Draw
 
 env:
-  SCHEDULED_NETWORK: Preview  # Change to Mainnet for production
+  SCHEDULED_NETWORK: Mainnet
 
 on:
   schedule:
@@ -17,7 +17,7 @@ on:
       network:
         description: 'Network'
         required: true
-        default: 'Preview'
+        default: 'Mainnet'
         type: choice
         options:
           - Preview
