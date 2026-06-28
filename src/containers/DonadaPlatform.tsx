@@ -15,7 +15,7 @@ import {
 // ── Contract constants ────────────────────────────────────────────────────────
 
 // Legacy policy ID (DonodaNFT001–003): 21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a
-const DONADA_POLICY_ID   = 'f3cfe3e83aa282cde0f6d67e79860ccaa55969a4b685db614055fc2f';
+const DONADA_POLICY_ID   = '474b3f587a9eca8fecd1c0525f61e63e5124b0ec535a3b70072ea5de';
 
 const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
@@ -105,7 +105,7 @@ interface InteractionResult {
 type Network = 'Mainnet' | 'Preview';
 
 // Module-level network tracker — set by initLucid, used by standalone address helpers.
-let _currentNetwork: Network = 'Mainnet';
+let _currentNetwork: Network = 'Preview';
 
 function blockfrostConfig(network: Network): { url: string; apiKey: string } {
   return network === 'Preview'
@@ -524,7 +524,7 @@ function getAvailableWallets(): WalletInfo[] {
 
 export default function DonadaPlatform() {
   // Network (toggled in admin panel; defaults to Mainnet for production)
-  const [network, setNetwork] = useState<Network>('Mainnet');
+  const [network, setNetwork] = useState<Network>('Preview');
 
   // Draw date / countdown
   const [nextDrawDate, setNextDrawDate] = useState<Date | null>(null);
