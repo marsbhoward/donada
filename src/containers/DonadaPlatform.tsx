@@ -105,7 +105,7 @@ interface InteractionResult {
 type Network = 'Mainnet' | 'Preview';
 
 // Module-level network tracker — set by initLucid, used by standalone address helpers.
-let _currentNetwork: Network = 'Preview';
+let _currentNetwork: Network = 'Mainnet';
 
 function blockfrostConfig(network: Network): { url: string; apiKey: string } {
   return network === 'Preview'
