@@ -1,5 +1,6 @@
 /// <reference types="node" />
 import React, { useState, useEffect, useRef } from 'react';
+import { useWallet } from '@solana/wallet-adapter-react';
 import RentModal from '../components/RentModal';
 import TxConfirmModal from '../components/TxConfirmModal';
 import { fetchNftMetadata } from '../utils/nftMetadata';
@@ -15,7 +16,7 @@ import {
 // ── Contract constants ────────────────────────────────────────────────────────
 
 // Legacy policy ID (DonodaNFT001–003): 21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a
-const DONADA_POLICY_ID   = 'f3cfe3e83aa282cde0f6d67e79860ccaa55969a4b685db614055fc2f';
+const DONADA_POLICY_ID   = '474b3f587a9eca8fecd1c0525f61e63e5124b0ec535a3b70072ea5de';
 
 const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
@@ -67,6 +68,7 @@ interface WalletInfo {
 interface ConnectedWalletState {
   name: string;
   api: unknown; // enabled CIP-30 API passed to lucid.selectWallet.fromAPI()
+  address: string;
 }
 
 interface NftAsset {
@@ -75,6 +77,7 @@ interface NftAsset {
   name?: string;
   image?: string;
   rentalFee?: bigint; // lovelace — set on listed NFTs fetched from the contract
+  walletKey?: string; // which connected wallet.name owns this NFT
 }
 
 interface Countdown {
@@ -105,7 +108,7 @@ interface InteractionResult {
 type Network = 'Mainnet' | 'Preview';
 
 // Module-level network tracker — set by initLucid, used by standalone address helpers.
-let _currentNetwork: Network = 'Mainnet';
+let _currentNetwork: Network = 'Preview';
 
 function blockfrostConfig(network: Network): { url: string; apiKey: string } {
   return network === 'Preview'
@@ -500,6 +503,16 @@ const WALLET_BRAND_COLORS: Record<string, string> = {
   begin:      '#06b6d4',
 };
 
+const SOLANA_BRAND_COLORS: Record<string, string> = {
+  phantom:  '#ab9ff2',
+  solflare: '#fc8c00',
+};
+
+// Cardano addresses start with addr1 (mainnet) or addr_test1 (testnet).
+// Solana addresses are base58-encoded 32-byte public keys (~44 chars, no prefix).
+const isCardanoAddress = (addr: string) => /^addr(_test)?1/.test(addr);
+const isSolanaAddress  = (addr: string) => !isCardanoAddress(addr) && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(addr);
+
 const WALLET_DOWNLOADS: { key: string; name: string; url: string }[] = [
   { key: 'eternl',     name: 'Eternl',     url: 'https://eternl.io' },
   { key: 'lace',       name: 'Lace',       url: 'https://www.lace.io' },
@@ -524,7 +537,7 @@ function getAvailableWallets(): WalletInfo[] {
 
 export default function DonadaPlatform() {
   // Network (toggled in admin panel; defaults to Mainnet for production)
-  const [network, setNetwork] = useState<Network>('Mainnet');
+  const [network, setNetwork] = useState<Network>('Preview');
 
   // Draw date / countdown
   const [nextDrawDate, setNextDrawDate] = useState<Date | null>(null);
@@ -537,11 +550,21 @@ export default function DonadaPlatform() {
   const lastWinnerDrawDateRef = useRef<Date | null>(null);
   const [drawDatesLoaded, setDrawDatesLoaded] = useState(false);
 
-  // Wallet
+  // Cardano wallet
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
-  const [connectedWallet, setConnectedWallet] = useState<ConnectedWalletState | null>(null);
-  const connectedWalletRef = useRef<ConnectedWalletState | null>(null);
-  const [fullWalletAddress, setFullWalletAddress] = useState<string | null>(null);
+  const [connectedWallets, setConnectedWallets] = useState<ConnectedWalletState[]>([]);
+  const connectedWalletsRef = useRef<ConnectedWalletState[]>([]);
+
+  // Solana wallet (via wallet-adapter)
+  const {
+    select: selectSolanaWallet,
+    wallets: solanaWallets,
+    wallet: solanaWallet,
+    publicKey: solanaPublicKey,
+    connected: solanaConnected,
+    connect: connectSolana,
+    disconnect: disconnectSolana,
+  } = useWallet();
 
   // Modal
   const [showRentModal, setShowRentModal] = useState(false);
@@ -601,9 +624,12 @@ export default function DonadaPlatform() {
   // Theme
   const [isDarkMode, setIsDarkMode] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
   const [isDimming, setIsDimming] = useState(false);
-  const [signBtnAnim, setSignBtnAnim] = useState<'idle' | 'out' | 'in'>('idle');
   const [logoDropdownOpen, setLogoDropdownOpen] = useState(false);
   const logoDropdownRef = useRef<HTMLDivElement>(null);
+  const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
+  const [walletDropdownScreen, setWalletDropdownScreen] = useState<'main' | 'add-cardano' | 'add-solana' | 'disconnect-pick'>('main');
+  const [walletPickerNotice, setWalletPickerNotice] = useState<string | null>(null);
+  const walletDropdownRef = useRef<HTMLDivElement>(null);
 
   // Connected wallet's total raffle entries across all sources
   const [userEntries, setUserEntries] = useState<{
@@ -617,11 +643,11 @@ export default function DonadaPlatform() {
 
   // Auto-close the connect prompt once a wallet successfully connects
   useEffect(() => {
-    if (connectedWallet && showConnectPrompt) {
+    if (connectedWallets.length > 0 && showConnectPrompt) {
       setShowConnectPrompt(false);
       setPromptWallets([]);
     }
-  }, [connectedWallet, showConnectPrompt]);
+  }, [connectedWallets, showConnectPrompt]);
 
   // ----- Fetch on-chain NFT stats -----
   useEffect(() => {
@@ -687,21 +713,25 @@ export default function DonadaPlatform() {
     return () => { cancelled = true; };
   }, [network]);
 
-  // ----- Check if connected wallet has cancellable listings -----
+  // ----- Check if any connected wallet has cancellable listings -----
   useEffect(() => {
-    if (!fullWalletAddress) { setHasActiveListings(false); return; }
+    if (connectedWallets.length === 0) { setHasActiveListings(false); return; }
     let cancelled = false;
     const check = async () => {
       try {
         const lucid = await initLucid(network);
         const { contractAddress } = await loadRentalValidator(network);
         const utxos = await lucid.utxosAt(contractAddress);
-        const walletPayHash = getAddressDetails(fullWalletAddress).paymentCredential?.hash;
-        const hasAny = walletPayHash != null && utxos.some(u => {
+        const payHashes = new Set(
+          connectedWallets
+            .map(w => getAddressDetails(w.address).paymentCredential?.hash)
+            .filter((h): h is string => !!h)
+        );
+        const hasAny = utxos.some(u => {
           try {
             const d = decodeDatum(u);
             const ownerPayHash = getAddressDetails(d.owner).paymentCredential?.hash;
-            return ownerPayHash === walletPayHash && d.renter === null;
+            return ownerPayHash != null && payHashes.has(ownerPayHash) && d.renter === null;
           } catch { return false; }
         });
         if (!cancelled) setHasActiveListings(hasAny);
@@ -709,54 +739,57 @@ export default function DonadaPlatform() {
     };
     check();
     return () => { cancelled = true; };
-  }, [fullWalletAddress, network]);
+  }, [connectedWallets, network]);
 
-  // ----- Compute the connected wallet's total raffle entries -----
+  // ----- Compute all connected wallets' total raffle entries -----
   useEffect(() => {
-    if (!fullWalletAddress) { setUserEntries(null); return; }
+    if (connectedWallets.length === 0) { setUserEntries(null); return; }
     let cancelled = false;
 
     const fetchEntries = async () => {
       try {
         const lucid = await initLucid(network);
         const { contractAddress } = await loadRentalValidator(network);
-        if (connectedWalletRef.current) selectWallet(lucid, connectedWalletRef.current.api);
+        const solanaAddr = solanaPublicKey?.toBase58() ?? null;
+        const allAddresses = [
+          ...connectedWallets.map(w => w.address),
+          ...(solanaAddr ? [solanaAddr] : []),
+        ];
 
-        // All three sources run in parallel; each fails independently
         const [utxosResult, wpResult, holdingResult] = await Promise.allSettled([
           lucid.utxosAt(contractAddress),
-          fetch('/data/wallet_participants.csv').then(r => r.text()),
+          fetch('/data/socials_participants.csv').then(r => r.text()),
           (async (): Promise<number> => {
-            if (!connectedWalletRef.current) return 0;
-            // getUtxos() scans all wallet addresses via CIP-30
-            const walletUtxos = await lucid.wallet().getUtxos();
-            return walletUtxos.reduce((n, u) =>
-              n + Object.keys(u.assets).filter(unit => unit.startsWith(DONADA_POLICY_ID)).length
-            , 0);
+            const counts = await Promise.all(connectedWalletsRef.current.map(async w => {
+              const tempLucid = await initLucid(network);
+              selectWallet(tempLucid, w.api);
+              const utxos = await tempLucid.wallet().getUtxos();
+              return utxos.reduce((n, u) =>
+                n + Object.keys(u.assets).filter(unit => unit.startsWith(DONADA_POLICY_ID)).length
+              , 0);
+            }));
+            return counts.reduce((a, b) => a + b, 0);
           })(),
         ]);
 
-        // 1 & 2: contract UTxOs
         let listed = 0, renting = 0;
         if (utxosResult.status === 'fulfilled') {
           for (const u of utxosResult.value) {
             try {
               const d = decodeDatum(u);
-              if (d.owner === fullWalletAddress) listed++;
-              if (d.renter === fullWalletAddress) renting++;
+              if (allAddresses.includes(d.owner)) listed++;
+              if (d.renter && allAddresses.includes(d.renter)) renting++;
             } catch { /* skip malformed */ }
           }
         }
 
-        // 3: wallet_participants.csv
         let participated = 0, freeEntrySnapshotTaken = false;
         if (wpResult.status === 'fulfilled') {
           const wpRows = wpResult.value.trim().split('\n').slice(1).filter(l => l.trim());
           freeEntrySnapshotTaken = wpRows.length > 0;
-          participated = wpRows.filter(line => line.replace(/"/g, '').trim() === fullWalletAddress).length;
+          participated = wpRows.filter(line => allAddresses.includes(line.replace(/"/g, '').trim())).length;
         }
 
-        // 4: holding
         const holding = holdingResult.status === 'fulfilled' ? holdingResult.value : 0;
 
         if (!cancelled) setUserEntries({ listed, renting, participated, holding, total: listed + renting + participated + holding, freeEntrySnapshotTaken });
@@ -768,7 +801,7 @@ export default function DonadaPlatform() {
 
     fetchEntries();
     return () => { cancelled = true; };
-  }, [fullWalletAddress, network]);
+  }, [connectedWallets, solanaPublicKey, network]);
 
   // ----- Load next draw date and latest winner from CSVs -----
   useEffect(() => {
@@ -878,44 +911,117 @@ export default function DonadaPlatform() {
   }, [nextDrawDate]);
 
   // ----- Wallet handlers -----
-  const handleSelectWallet = () => {
-    if (connectedWallet) {
-      setConnectedWallet(null);
-      setFullWalletAddress(null);
-      setWallets([]);
-      setOwnedNfts([]);
-      return;
+  const disconnectCardano = (address?: string) => {
+    if (address) {
+      setConnectedWallets(prev => prev.filter(w => w.address !== address));
+    } else {
+      setConnectedWallets([]);
     }
+    setOwnedNfts([]);
+  };
+
+  const handleWalletBtnClick = () => {
+    setWalletDropdownOpen(v => !v);
+    setWalletDropdownScreen('main');
+  };
+
+  const handleConnectCardano = () => {
     const detected = getAvailableWallets();
-    if (detected.length === 0) { setShowNoWalletModal(true); return; }
+    console.log('[handleConnectCardano] detected:', detected.map(w => w.key), 'connected:', connectedWallets.map(w => w.name));
+    if (detected.length === 0) { setShowNoWalletModal(true); setWalletDropdownOpen(false); return; }
     setWallets(detected);
-    if (detected.length === 1) connectWallet(detected[0].key);
+    // Auto-connect only on first connection with a single wallet.
+    // When wallets are already connected, always show the picker so the user
+    // can select which extension to call enable() on (e.g. after switching accounts).
+    if (detected.length === 1 && connectedWallets.length === 0) {
+      connectWallet(detected[0].key); // dropdown closed by connectWallet on success
+    } else {
+      console.log('[handleConnectCardano] opening add-cardano picker');
+      setWalletDropdownScreen('add-cardano');
+    }
+  };
+
+  const handleDisconnectFlow = () => {
+    const hasCardano = connectedWallets.length > 0;
+    const hasSolana = solanaConnected;
+    if (connectedWallets.length > 1 || (hasCardano && hasSolana)) {
+      setWalletDropdownScreen('disconnect-pick');
+    } else if (hasCardano) {
+      disconnectCardano();
+      setWalletDropdownOpen(false);
+    } else if (hasSolana) {
+      disconnectSolana();
+      setWalletDropdownOpen(false);
+    }
   };
 
   const connectWallet = async (walletKey: string) => {
+    console.log('[connectWallet] called with', walletKey);
     try {
+      console.log('[connectWallet] calling enable()…');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const api = await (window as any).cardano[walletKey].enable();
-      // makeWalletFromAPI decodes the CIP-30 address via CML (no provider needed)
-      const address = await makeWalletFromAPI({} as any, api as WalletApi).address();
-      setConnectedWallet({ name: walletKey, api });
-      setFullWalletAddress(address ?? null);
+      console.log('[connectWallet] enable() resolved, deriving address…');
+      const address = await makeWalletFromAPI({} as any, api as WalletApi).address() ?? '';
+      console.log('[connectWallet] address:', address);
+      // Deduplicate by address — allows multiple accounts from same extension
+      if (connectedWalletsRef.current.some(w => w.address === address)) {
+        console.log('[connectWallet] address already connected, skipping');
+        setWalletPickerNotice('This account is already connected. If you are using Lace, it does not support multiple accounts per dApp — try Eternl or a different wallet extension instead.');
+        return;
+      }
+      setWalletPickerNotice(null);
+      setConnectedWallets(prev => [...prev, { name: walletKey, api, address }]);
       setWallets([]);
+      setWalletDropdownOpen(false);
     } catch (err) {
-      console.error('Error connecting to wallet:', err);
+      console.error('[connectWallet] error:', err);
       raiseWalletNotice(err);
     }
   };
 
-  // Keep ref in sync so retry lambdas always read the latest wallet instance
+  // Keep ref in sync so retry lambdas always read the latest wallet list
   useEffect(() => {
-    connectedWalletRef.current = connectedWallet;
-  }, [connectedWallet]);
+    connectedWalletsRef.current = connectedWallets;
+  }, [connectedWallets]);
+
+  // Listen for account-change events fired by wallet extensions (CIP-30 experimental).
+  // When a connected wallet signals an account switch, re-call enable() and add the
+  // new account if it isn't already in the list.
+  useEffect(() => {
+    if (connectedWallets.length === 0) return;
+    const cleanups: (() => void)[] = [];
+
+    for (const w of connectedWallets) {
+      const ext = (window as any).cardano?.[w.name];
+      const on = ext?.experimental?.on ?? ext?.on;
+      const off = ext?.experimental?.off ?? ext?.off;
+      if (typeof on !== 'function') continue;
+
+      const handler = async () => {
+        try {
+          const api = await ext.enable();
+          const address = await makeWalletFromAPI({} as any, api as WalletApi).address() ?? '';
+          if (!address || connectedWalletsRef.current.some(cw => cw.address === address)) return;
+          setConnectedWallets(prev => [...prev, { name: w.name, api, address }]);
+        } catch { /* ignore */ }
+      };
+
+      on('accountChange', handler);
+      if (typeof off === 'function') cleanups.push(() => { try { off('accountChange', handler); } catch { /* ignore */ } });
+    }
+
+    return () => cleanups.forEach(fn => fn());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectedWallets.map(w => w.address).join(',')]);
 
   useEffect(() => {
     const handleOutside = (e: MouseEvent | TouchEvent) => {
       if (logoDropdownRef.current && !logoDropdownRef.current.contains(e.target as Node)) {
         setLogoDropdownOpen(false);
+      }
+      if (walletDropdownRef.current && !walletDropdownRef.current.contains(e.target as Node)) {
+        setWalletDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleOutside);
@@ -926,17 +1032,16 @@ export default function DonadaPlatform() {
     };
   }, []);
 
-  // Re-enables the CIP-30 API (triggers the wallet extension's unlock UI).
-  // Returns true on success.
-  const refreshWallet = async (): Promise<boolean> => {
-    const current = connectedWalletRef.current;
-    if (!current) return false;
+  // Re-enables the CIP-30 API for a specific wallet (triggers unlock UI).
+  const refreshWallet = async (address: string): Promise<boolean> => {
     try {
+      const entry = connectedWalletsRef.current.find(w => w.address === address);
+      if (!entry) return false;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const api = await (window as any).cardano[current.name].enable();
-      const updated = { ...current, api };
-      connectedWalletRef.current = updated;
-      setConnectedWallet(updated);
+      const api = await (window as any).cardano[entry.name].enable();
+      const updater = (w: ConnectedWalletState) => w.address === address ? { ...w, api } : w;
+      setConnectedWallets(prev => prev.map(updater));
+      connectedWalletsRef.current = connectedWalletsRef.current.map(updater);
       return true;
     } catch {
       return false;
@@ -949,27 +1054,16 @@ export default function DonadaPlatform() {
     else if (code === -2) setWalletNotice('disconnected');
   };
 
-  // Runs op(); if it throws APIError code -3 (wallet locked), refreshes the
-  // wallet (triggering the extension's unlock prompt) then retries once.
-  const withWalletRetry = async <T,>(op: () => Promise<T>): Promise<T> => {
+  // Runs op(); if it throws APIError -3 (wallet locked), refreshes that wallet then retries once.
+  const withWalletRetry = async <T,>(address: string, op: () => Promise<T>): Promise<T> => {
     try {
       return await op();
     } catch (err) {
       if ((err as any)?.code !== -3) throw err;
-      const ok = await refreshWallet();
+      const ok = await refreshWallet(address);
       if (!ok) throw err;
       return await op();
     }
-  };
-
-  const handleSignBtnClick = () => {
-    if (signBtnAnim !== 'idle') return;
-    setSignBtnAnim('out');
-    setTimeout(() => {
-      handleSelectWallet();
-      setSignBtnAnim('in');
-      setTimeout(() => setSignBtnAnim('idle'), 300);
-    }, 280);
   };
 
   const closeModal = () => {
@@ -977,31 +1071,33 @@ export default function DonadaPlatform() {
     setRentMode(false);
   };
 
-  // ----- Owner: load their own NFTs then open listing modal -----
+  // ----- Owner: load NFTs from all connected wallets then open listing modal -----
   const loadOwnedNftsForListing = async () => {
-    if (!fullWalletAddress || !connectedWalletRef.current) return;
+    if (connectedWalletsRef.current.length === 0) return;
     setListingError(null);
     try {
       setLoadingOwnedNfts(true);
-      const lucid = await initLucid(network);
-      selectWallet(lucid, connectedWalletRef.current.api);
-      // getUtxos() returns all UTxOs across all wallet addresses (full CIP-30 scan)
-      const walletUtxos = await withWalletRetry(() => lucid.wallet().getUtxos());
-      const seen = new Set<string>();
-      const filtered: NftAsset[] = walletUtxos.flatMap(u =>
-        Object.keys(u.assets).filter(unit => {
-          if (!POLICY_IDS.some(p => unit.startsWith(p))) return false;
-          if (seen.has(unit)) return false;
-          seen.add(unit);
-          return true;
-        }).map(unit => ({ policyId: unit.slice(0, 56), assetName: toText(unit.slice(56)) } as NftAsset))
-      );
+      const allNfts: NftAsset[] = [];
+      for (const w of connectedWalletsRef.current) {
+        const lucid = await initLucid(network);
+        selectWallet(lucid, w.api);
+        const walletUtxos = await withWalletRetry(w.address, () => lucid.wallet().getUtxos());
+        const seen = new Set<string>();
+        walletUtxos.flatMap(u =>
+          Object.keys(u.assets).filter(unit => {
+            if (!POLICY_IDS.some(p => unit.startsWith(p))) return false;
+            if (seen.has(unit)) return false;
+            seen.add(unit);
+            return true;
+          }).map(unit => ({ policyId: unit.slice(0, 56), assetName: toText(unit.slice(56)), walletKey: w.address } as NftAsset))
+        ).forEach(n => allNfts.push(n));
+      }
       const enriched = (await Promise.all(
-        filtered.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName, network))
-      )).map((r: any) =>
+        allNfts.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName, network))
+      )).map((r: any, i: number) =>
         r.error
-          ? { policyId: r.policyId, assetName: r.assetName, name: r.assetName } as NftAsset
-          : r as NftAsset
+          ? { ...allNfts[i], name: allNfts[i].assetName } as NftAsset
+          : { ...r, walletKey: allNfts[i].walletKey } as NftAsset
       );
       setOwnedNfts(enriched);
       setRentMode(false);
@@ -1066,37 +1162,25 @@ export default function DonadaPlatform() {
 
   // ----- Owner: confirm listing modal → submit listing transaction -----
   const handleCreateListing = async ({ nft, rentalPrice }: { nft: NftAsset; rentalPrice: string }) => {
-    if (!connectedWallet) { closeModal(); setShowConnectPrompt(true); return; }
-    if (!fullWalletAddress || !nextDrawDate) return;
+    if (connectedWallets.length === 0) { closeModal(); setShowConnectPrompt(true); return; }
+    if (!nextDrawDate) return;
+    const ownerAddr = nft.walletKey ?? connectedWalletsRef.current[0].address;
     closeModal();
     setIsListing(true);
     setListingError(null);
-
     try {
-      const txHash = await withWalletRetry(async () => {
+      const txHash = await withWalletRetry(ownerAddr, async () => {
         const lucid = await initLucid(network);
-        selectWallet(lucid, connectedWalletRef.current!.api);
+        const w = connectedWalletsRef.current.find(cw => cw.address === ownerAddr)!;
+        selectWallet(lucid, w.api);
         const { contractAddress } = await loadRentalValidator(network);
-        return submitListing(
-          nft.name ?? nft.assetName,
-          fullWalletAddress,
-          rentalPrice,
-          Math.floor(nextDrawDate.getTime()),
-          contractAddress,
-          lucid,
-          network
-        );
+        return submitListing(nft.name ?? nft.assetName, w.address, rentalPrice, Math.floor(nextDrawDate.getTime()), contractAddress, lucid, network);
       });
       setTxConfirm({ title: 'Listing Created!', txHash });
       setHasActiveListings(true);
       setNftStats(prev => prev ? { ...prev, openRentals: prev.openRentals + 1 } : prev);
       setUserEntries(prev => prev ? { ...prev, listed: prev.listed + 1, holding: Math.max(0, prev.holding - 1), total: prev.total } : prev);
-      notifyListingCreated({
-        nftName: nft.name ?? nft.assetName,
-        price:   rentalPrice,
-        owner:   fullWalletAddress,
-        txHash,
-      });
+      notifyListingCreated({ nftName: nft.name ?? nft.assetName, price: rentalPrice, owner: ownerAddr, txHash });
     } catch (err) {
       console.error('Failed to list NFT:', err);
       raiseWalletNotice(err);
@@ -1109,18 +1193,18 @@ export default function DonadaPlatform() {
 
   // ----- Renter: confirm rent modal → submit rent transaction -----
   const handleRentNft = async ({ nft }: { nft: NftAsset; rentalPrice: string }) => {
-    if (!connectedWallet) { closeModal(); setShowConnectPrompt(true); return; }
-    if (!fullWalletAddress) return;
+    if (connectedWallets.length === 0) { closeModal(); setShowConnectPrompt(true); return; }
+    const payerAddr = connectedWalletsRef.current[0].address;
     closeModal();
     setIsRenting(true);
     setRentError(null);
-
     try {
-      const result = await withWalletRetry(async () => {
+      const result = await withWalletRetry(payerAddr, async () => {
         const lucid = await initLucid(network);
-        selectWallet(lucid, connectedWalletRef.current!.api);
+        const w = connectedWalletsRef.current[0];
+        selectWallet(lucid, w.api);
         const validator = await loadRentalValidator(network);
-        return rentNft(nft.assetName, fullWalletAddress, validator, lucid);
+        return rentNft(nft.assetName, w.address, validator, lucid);
       });
       setTxConfirm({ title: 'NFT Rented!', txHash: result.txHash });
       setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - 1), activeRentals: prev.activeRentals + 1 } : prev);
@@ -1129,14 +1213,8 @@ export default function DonadaPlatform() {
       waitForTxOnChain(result.txHash, bfUrl, bfKey, () => {}).then(() => {
         setTxConfirmedToast({ txHash: result.txHash });
         setTimeout(() => setTxConfirmedToast(null), 8000);
-      }).catch(() => { /* confirmation timeout — silent */ });
-      notifyRentalConfirmed({
-        nftName: nft.name ?? nft.assetName,
-        fee:     nft.rentalFee != null ? (Number(nft.rentalFee) / 1_000_000).toFixed(2) : '—',
-        renter:  fullWalletAddress,
-        owner:   '—',
-        txHash:  result.txHash,
-      });
+      }).catch(() => {});
+      notifyRentalConfirmed({ nftName: nft.name ?? nft.assetName, fee: nft.rentalFee != null ? (Number(nft.rentalFee) / 1_000_000).toFixed(2) : '—', renter: payerAddr, owner: '—', txHash: result.txHash });
     } catch (err) {
       console.error('Failed to rent NFT:', err);
       raiseWalletNotice(err);
@@ -1147,29 +1225,28 @@ export default function DonadaPlatform() {
     }
   };
 
-  // ----- Owner: load cancellable listings into modal -----
+  // ----- Owner: load cancellable listings from all connected wallets -----
   const loadCancellableListings = async () => {
-    if (!fullWalletAddress || !connectedWallet) return;
+    if (connectedWalletsRef.current.length === 0) return;
     setCancelError(null);
     setLoadingCancelListings(true);
     try {
       const lucid = await initLucid(network);
-      selectWallet(lucid, connectedWalletRef.current!.api);
       const { contractAddress } = await loadRentalValidator(network);
       const utxos = await lucid.utxosAt(contractAddress);
+      const allAddresses = connectedWalletsRef.current.map(w => w.address);
       const raw = utxos.flatMap(u => {
         try {
           const datum = decodeDatum(u);
-          if (datum.owner !== fullWalletAddress || datum.renter !== null) return [];
-          return [{ policyId: datum.nft_policy, assetName: datum.nft_asset_name, name: datum.nft_asset_name } as NftAsset];
+          if (!allAddresses.includes(datum.owner) || datum.renter !== null) return [];
+          const ownerW = connectedWalletsRef.current.find(w => w.address === datum.owner);
+          return [{ policyId: datum.nft_policy, assetName: datum.nft_asset_name, name: datum.nft_asset_name, walletKey: ownerW?.address } as NftAsset];
         } catch { return []; }
       });
       const owned = await Promise.all(
         raw.map(async (a: NftAsset) => {
           const meta = await fetchNftMetadata(a.policyId, a.assetName, network);
-          return (meta as any).error
-            ? a
-            : { ...a, image: (meta as any).image ?? undefined, name: (meta as any).name ?? a.name } as NftAsset;
+          return (meta as any).error ? a : { ...a, image: (meta as any).image ?? undefined, name: (meta as any).name ?? a.name } as NftAsset;
         })
       );
       setCancelNfts(owned);
@@ -1186,16 +1263,18 @@ export default function DonadaPlatform() {
 
   // ----- Owner: confirm cancel modal → submit CancelListing transaction -----
   const handleCancelNft = async ({ nft }: { nft: NftAsset; rentalPrice: string }) => {
-    if (!fullWalletAddress || !connectedWallet) return;
+    if (connectedWallets.length === 0) return;
+    const ownerAddr = nft.walletKey ?? connectedWalletsRef.current[0].address;
     setShowCancelModal(false);
     setIsCancelling(true);
     setCancelError(null);
     try {
-      const result = await withWalletRetry(async () => {
+      const result = await withWalletRetry(ownerAddr, async () => {
         const lucid = await initLucid(network);
-        selectWallet(lucid, connectedWalletRef.current!.api);
+        const w = connectedWalletsRef.current.find(cw => cw.address === ownerAddr)!;
+        selectWallet(lucid, w.api);
         const validator = await loadRentalValidator(network);
-        return cancelListingNft(nft.assetName, fullWalletAddress, validator, lucid);
+        return cancelListingNft(nft.assetName, w.address, validator, lucid);
       });
       setTxConfirm({ title: 'Listing Cancelled!', txHash: result.txHash });
       setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - 1) } : prev);
@@ -1204,12 +1283,7 @@ export default function DonadaPlatform() {
         setHasActiveListings(updated.length > 0);
         return updated;
       });
-      setUserEntries(prev => prev ? {
-        ...prev,
-        listed: Math.max(0, prev.listed - 1),
-        holding: prev.holding + 1,
-        total: prev.total,
-      } : prev);
+      setUserEntries(prev => prev ? { ...prev, listed: Math.max(0, prev.listed - 1), holding: prev.holding + 1, total: prev.total } : prev);
     } catch (err) {
       console.error('Cancel failed:', err);
       raiseWalletNotice(err);
@@ -1222,7 +1296,8 @@ export default function DonadaPlatform() {
 
   // ----- Admin: execute draw (project wallet only) -----
   const handleExecuteDraw = async () => {
-    if (!connectedWallet || !fullWalletAddress) return;
+    const adminWallet = connectedWalletsRef.current.find(w => w.address === PROJECT_WALLET[network]);
+    if (!adminWallet) return;
     const prizeFloat = parseFloat(drawPrizeAda);
     if (isNaN(prizeFloat) || prizeFloat <= 0) {
       setDrawError('Enter a valid prize amount in ADA.');
@@ -1245,7 +1320,7 @@ export default function DonadaPlatform() {
 
     try {
       const lucid = await initLucid(network);
-      selectWallet(lucid, connectedWalletRef.current!.api);
+      selectWallet(lucid, adminWallet.api);
 
       const { contractAddress } = await loadRentalValidator(network);
 
@@ -1280,22 +1355,31 @@ export default function DonadaPlatform() {
         new Set([contractAddress, PROJECT_WALLET[network]]),
       );
 
-      // ── Source 3: wallet participants (address only, no asset_id) ─────────────
-      const parseWalletCsv = async (): Promise<string[]> => {
+      // ── Source 3: socials participants (address only, no asset_id) ──────────
+      // CSV may contain both Cardano and Solana addresses. Only Cardano addresses
+      // can receive ADA payouts — Solana addresses are counted for participation
+      // but excluded from the on-chain payout pool.
+      const parseSocialsCsv = async (): Promise<{ cardano: string[]; solana: string[] }> => {
         try {
-          const res = await fetch('/data/wallet_participants.csv');
-          if (!res.ok) return [];
+          const res = await fetch('/data/socials_participants.csv');
+          if (!res.ok) return { cardano: [], solana: [] };
           const text = await res.text();
           const seen = new Set<string>();
-          return text.trim().split('\n')
+          const addrs = text.trim().split('\n')
             .slice(1)
             .map(l => l.trim().replace(/^"|"$/g, ''))
             .filter(l => l.length > 0)
             .filter(a => { if (seen.has(a)) return false; seen.add(a); return true; });
-        } catch { return []; }
+          return {
+            cardano: addrs.filter(isCardanoAddress),
+            solana:  addrs.filter(isSolanaAddress),
+          };
+        } catch { return { cardano: [], solana: [] }; }
       };
 
-      const walletAddresses = await parseWalletCsv();
+      const { cardano: cardanoSocialAddrs, solana: solanaSocialAddrs } = await parseSocialsCsv();
+      const walletAddresses = cardanoSocialAddrs;
+      void solanaSocialAddrs; // counted in entries but not eligible for ADA payout
 
       const nftHolderParticipants: DrawParticipant[] = nftHolderRows.map(
         r => ({ source: 'nft_holder' as const, address: r.address, assetId: r.assetId })
@@ -1407,7 +1491,7 @@ export default function DonadaPlatform() {
       if (activeRenter) {
         tx = tx.pay.ToAddress(activeRenter, { lovelace: renterShare });
       }
-      tx = tx.addSigner(fullWalletAddress);
+      tx = tx.addSigner(adminWallet.address);
 
       const built  = await tx.complete();
       const signed = await built.sign.withWallet().complete();
@@ -1428,16 +1512,16 @@ export default function DonadaPlatform() {
         // Fresh lucid instance ensures clean Blockfrost UTxO state (not stale from payout tx)
         const claimLucid = await initLucid(network);
         const claimValidator = await loadRentalValidator(network);
-        const claimedHashes = await withWalletRetry(async () => {
-          selectWallet(claimLucid, connectedWalletRef.current!.api);
+        const claimedHashes = await withWalletRetry(adminWallet.address, async () => {
+          selectWallet(claimLucid, connectedWalletsRef.current.find(w => w.name === adminWallet.name)!.api);
           return claimBackExpiredRentals(
-            fullWalletAddress,
+            adminWallet.address,
             claimValidator,
             claimLucid,
             msg => setDrawLog(prev => [...prev, msg]),
           );
         });
-        log(`Returned ${claimedHashes.length} NFT(s) to owner(s).`);
+        log(`Returned ${(claimedHashes as string[]).length} NFT(s) to owner(s).`);
       } catch (cbErr) {
         const cbMsg = cbErr instanceof Error ? cbErr.message : String(cbErr);
         // "No expired UTxOs" just means no rentals were active this cycle
@@ -1456,18 +1540,19 @@ export default function DonadaPlatform() {
 
   // ----- Admin: claim back all expired rental UTxOs -----
   const handleClaimBack = async () => {
-    if (!connectedWallet || !fullWalletAddress) return;
+    const adminWallet = connectedWalletsRef.current.find(w => w.address === PROJECT_WALLET[network]);
+    if (!adminWallet) return;
     setIsClaimingBack(true);
     setClaimBackLog([]);
     setClaimBackError(null);
     try {
       const lucid = await initLucid(network);
-      selectWallet(lucid, connectedWalletRef.current!.api);
+      selectWallet(lucid, adminWallet.api);
       const validator = await loadRentalValidator(network);
-      await withWalletRetry(async () => {
-        selectWallet(lucid, connectedWalletRef.current!.api);
+      await withWalletRetry(adminWallet.address, async () => {
+        selectWallet(lucid, connectedWalletsRef.current.find(w => w.name === adminWallet.name)!.api);
         return claimBackExpiredRentals(
-          fullWalletAddress,
+          adminWallet.address,
           validator,
           lucid,
           msg => setClaimBackLog(prev => [...prev, msg]),
@@ -1549,19 +1634,153 @@ export default function DonadaPlatform() {
               </svg>
             )}
           </button>
-          <div className="sign-btn-wrapper">
-            <button
-              className={`select-btn sign-btn-${signBtnAnim}`}
-              onClick={handleSignBtnClick}
-              disabled={signBtnAnim !== 'idle'}
-            >
-              {connectedWallet ? 'Disconnect Wallet' : 'Sign In'}
+          {/* ── Wallet action button + dropdown ── */}
+          <div className="wallet-action-wrapper" ref={walletDropdownRef}>
+            <button className="select-btn" onClick={handleWalletBtnClick}>
+              {(connectedWallets.length > 0 || solanaConnected) ? 'Wallet Actions' : 'Sign In'}
             </button>
-          </div>
 
-          <span className="user-label">
-            {connectedWallet ? `${connectedWallet.name} Connected` : '[No Wallet]'}
-          </span>
+            {walletDropdownOpen && walletDropdownScreen === 'main' && (
+              <div className="wallet-dropdown">
+                {connectedWallets.map((cw, i) => (
+                  <div
+                    key={cw.address}
+                    className="wallet-dropdown-item wallet-dropdown-item--connected"
+                    style={{ '--wallet-color': WALLET_BRAND_COLORS[cw.name.toLowerCase()] ?? '#666' } as React.CSSProperties}
+                  >
+                    <div className="wallet-dropdown-connected-inner">
+                      <span className="wallet-dropdown-connected-name">{cw.name}</span>
+                      <span className="wallet-dropdown-connected-addr">
+                        {cw.address ? `${cw.address.slice(0, 10)}…${cw.address.slice(-6)}` : cw.name}
+                      </span>
+                    </div>
+                    {i === connectedWallets.length - 1 && (
+                      <button
+                        className="wallet-dropdown-add-btn"
+                        title="Add another Cardano wallet"
+                        onClick={e => { e.stopPropagation(); handleConnectCardano(); }}
+                      >+</button>
+                    )}
+                  </div>
+                ))}
+                {solanaConnected && (
+                  <div
+                    className="wallet-dropdown-item wallet-dropdown-item--connected"
+                    style={{ '--wallet-color': SOLANA_BRAND_COLORS[solanaWallet?.adapter.name.toLowerCase() ?? ''] ?? '#9945ff' } as React.CSSProperties}
+                  >
+                    <div className="wallet-dropdown-connected-inner">
+                      <span className="wallet-dropdown-connected-name">{solanaWallet?.adapter.name ?? 'Solana'}</span>
+                      <span className="wallet-dropdown-connected-addr">
+                        ◎ {solanaPublicKey!.toBase58().slice(0, 4)}…{solanaPublicKey!.toBase58().slice(-4)}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {(connectedWallets.length > 0 || solanaConnected) && (connectedWallets.length === 0 || !solanaConnected) && (
+                  <div className="wallet-dropdown-divider" />
+                )}
+                {connectedWallets.length === 0 && (
+                  <button className="wallet-dropdown-item" onClick={handleConnectCardano}>
+                    Connect Cardano
+                  </button>
+                )}
+                {!solanaConnected && (
+                  <button className="wallet-dropdown-item" onClick={() => setWalletDropdownScreen('add-solana')}>
+                    Connect Solana
+                  </button>
+                )}
+                {(connectedWallets.length > 0 || solanaConnected) && (
+                  <>
+                    <div className="wallet-dropdown-divider" />
+                    <button className="wallet-dropdown-item wallet-dropdown-item--danger" onClick={handleDisconnectFlow}>
+                      Disconnect
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+
+            {walletDropdownOpen && walletDropdownScreen === 'add-cardano' && (
+              <div className="wallet-dropdown">
+                <button className="wallet-dropdown-back" onClick={() => { setWalletDropdownScreen('main'); setWalletPickerNotice(null); }}>← Back</button>
+                <p className="wallet-dropdown-label">Choose Cardano Wallet</p>
+                {connectedWallets.length > 0 && !walletPickerNotice && (
+                  <p className="wallet-dropdown-hint">To add a second account, switch accounts in your wallet extension first. Note: Lace only supports one account per dApp — use Eternl or a different extension for multiple accounts.</p>
+                )}
+                {walletPickerNotice && (
+                  <p className="wallet-dropdown-notice">{walletPickerNotice}</p>
+                )}
+                {wallets.map(w => (
+                  <button
+                    key={w.key}
+                    className="wallet-dropdown-item"
+                    onClick={() => { console.log('[picker] clicked', w.key); connectWallet(w.key); }}
+                  >
+                    {w.icon
+                      ? <img src={w.icon} alt={w.name} className="wallet-dropdown-icon" />
+                      : <span className="wallet-dropdown-icon-fallback">{w.name.slice(0, 2).toUpperCase()}</span>
+                    }
+                    {w.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {walletDropdownOpen && walletDropdownScreen === 'add-solana' && (
+              <div className="wallet-dropdown">
+                <button className="wallet-dropdown-back" onClick={() => setWalletDropdownScreen('main')}>← Back</button>
+                <p className="wallet-dropdown-label">Choose Solana Wallet</p>
+                {solanaWallets.filter(w => w.readyState === 'Installed').map(w => (
+                  <button
+                    key={w.adapter.name}
+                    className="wallet-dropdown-item"
+                    onClick={() => {
+                      selectSolanaWallet(w.adapter.name);
+                      connectSolana().catch(console.error);
+                      setWalletDropdownOpen(false);
+                    }}
+                  >
+                    <img src={w.adapter.icon} alt={w.adapter.name} className="wallet-dropdown-icon" />
+                    {w.adapter.name}
+                  </button>
+                ))}
+                {solanaWallets.filter(w => w.readyState === 'Installed').length === 0 && (
+                  <p className="wallet-dropdown-empty">No Solana wallet detected</p>
+                )}
+              </div>
+            )}
+
+            {walletDropdownOpen && walletDropdownScreen === 'disconnect-pick' && (
+              <div className="wallet-dropdown">
+                <button className="wallet-dropdown-back" onClick={() => setWalletDropdownScreen('main')}>← Back</button>
+                <p className="wallet-dropdown-label">Disconnect which?</p>
+                {connectedWallets.map(cw => (
+                  <button
+                    key={cw.address}
+                    className="wallet-dropdown-item wallet-dropdown-item--danger"
+                    onClick={() => { disconnectCardano(cw.address); setWalletDropdownOpen(false); }}
+                  >
+                    ◈ {cw.name} ({cw.address.slice(0, 8)}…)
+                  </button>
+                ))}
+                {solanaConnected && (
+                  <button
+                    className="wallet-dropdown-item wallet-dropdown-item--danger"
+                    onClick={() => { disconnectSolana(); setWalletDropdownOpen(false); }}
+                  >
+                    ◎ Solana
+                  </button>
+                )}
+                <div className="wallet-dropdown-divider" />
+                <button
+                  className="wallet-dropdown-item wallet-dropdown-item--danger"
+                  onClick={() => { disconnectCardano(); disconnectSolana(); setWalletDropdownOpen(false); }}
+                >
+                  Disconnect All
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1577,25 +1796,6 @@ export default function DonadaPlatform() {
           <button className="wallet-notice-refresh" onClick={() => window.location.reload()}>
             Refresh Page
           </button>
-        </div>
-      )}
-
-      {wallets.length > 1 && !connectedWallet && (
-        <div className="wallet-list">
-          {wallets.map((w) => (
-            <button
-              key={w.key}
-              className="wallet-icon-btn"
-              onClick={() => connectWallet(w.key)}
-              style={{ '--wallet-color': WALLET_BRAND_COLORS[w.key.toLowerCase()] ?? '#111' } as React.CSSProperties}
-            >
-              {w.icon
-                ? <img src={w.icon} alt={w.name} />
-                : <span className="wallet-icon-btn__fallback">{w.name.slice(0, 2).toUpperCase()}</span>
-              }
-              <span className="wallet-icon-btn__name">{w.name}</span>
-            </button>
-          ))}
         </div>
       )}
 
@@ -1624,7 +1824,7 @@ export default function DonadaPlatform() {
               </div>
             </div>
 
-            {connectedWallet && (
+            {connectedWallets.length > 0 && (
               <div className="entries-panel">
                 <div className="entries-total">
                   {userEntries != null ? userEntries.total : '—'}
@@ -1693,7 +1893,7 @@ export default function DonadaPlatform() {
               </div>
             </div>
 
-            {fullWalletAddress !== PROJECT_WALLET[network] && <div className="right-section">
+            {!connectedWallets.some(w => w.address === PROJECT_WALLET[network]) && <div className="right-section">
               <div className="action-block">
                 <div className="action-text">Browse Rental Listings</div>
                 <button
@@ -1719,7 +1919,7 @@ export default function DonadaPlatform() {
                 <div className="action-text">Create Rental Listing</div>
                 <button
                   className="select-btn small"
-                  disabled={!connectedWallet || loadingOwnedNfts || !countdown || isListing}
+                  disabled={connectedWallets.length === 0 || loadingOwnedNfts || !countdown || isListing}
                   onClick={() => loadOwnedNftsForListing()}
                 >
                   {loadingOwnedNfts ? 'Loading...' : isListing ? 'Listing...' : 'select'}
@@ -1742,7 +1942,7 @@ export default function DonadaPlatform() {
                     <div className="action-text">Cancel Listing</div>
                     <button
                       className="select-btn small"
-                      disabled={!connectedWallet || loadingCancelListings || isCancelling}
+                      disabled={connectedWallets.length === 0 || loadingCancelListings || isCancelling}
                       onClick={loadCancellableListings}
                     >
                       {loadingCancelListings ? 'Loading...' : isCancelling ? 'Cancelling...' : 'select'}
@@ -1761,7 +1961,7 @@ export default function DonadaPlatform() {
             </div>}
           </div>
         </div>
-      {fullWalletAddress === PROJECT_WALLET[network] && (
+      {connectedWallets.some(w => w.address === PROJECT_WALLET[network]) && (
         <section className="admin-draw">
           <h3>Admin — Execute Draw</h3>
           {nftStats != null && (
