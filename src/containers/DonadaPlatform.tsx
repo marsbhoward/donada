@@ -1,6 +1,5 @@
 /// <reference types="node" />
 import React, { useState, useEffect, useRef } from 'react';
-import { useWallet } from '@solana/wallet-adapter-react';
 import RentModal from '../components/RentModal';
 import TxConfirmModal from '../components/TxConfirmModal';
 import { fetchNftMetadata } from '../utils/nftMetadata';
@@ -503,11 +502,6 @@ const WALLET_BRAND_COLORS: Record<string, string> = {
   begin:      '#06b6d4',
 };
 
-const SOLANA_BRAND_COLORS: Record<string, string> = {
-  phantom:  '#ab9ff2',
-  solflare: '#fc8c00',
-};
-
 // Cardano addresses start with addr1 (mainnet) or addr_test1 (testnet).
 // Solana addresses are base58-encoded 32-byte public keys (~44 chars, no prefix).
 const isCardanoAddress = (addr: string) => /^addr(_test)?1/.test(addr);
@@ -554,17 +548,6 @@ export default function DonadaPlatform() {
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
   const [connectedWallets, setConnectedWallets] = useState<ConnectedWalletState[]>([]);
   const connectedWalletsRef = useRef<ConnectedWalletState[]>([]);
-
-  // Solana wallet (via wallet-adapter)
-  const {
-    select: selectSolanaWallet,
-    wallets: solanaWallets,
-    wallet: solanaWallet,
-    publicKey: solanaPublicKey,
-    connected: solanaConnected,
-    connect: connectSolana,
-    disconnect: disconnectSolana,
-  } = useWallet();
 
   // Modal
   const [showRentModal, setShowRentModal] = useState(false);
@@ -627,7 +610,7 @@ export default function DonadaPlatform() {
   const [logoDropdownOpen, setLogoDropdownOpen] = useState(false);
   const logoDropdownRef = useRef<HTMLDivElement>(null);
   const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
-  const [walletDropdownScreen, setWalletDropdownScreen] = useState<'main' | 'add-cardano' | 'add-solana' | 'disconnect-pick'>('main');
+  const [walletDropdownScreen, setWalletDropdownScreen] = useState<'main' | 'add-cardano' | 'disconnect-pick'>('main');
   const [walletPickerNotice, setWalletPickerNotice] = useState<string | null>(null);
   const walletDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -750,11 +733,7 @@ export default function DonadaPlatform() {
       try {
         const lucid = await initLucid(network);
         const { contractAddress } = await loadRentalValidator(network);
-        const solanaAddr = solanaPublicKey?.toBase58() ?? null;
-        const allAddresses = [
-          ...connectedWallets.map(w => w.address),
-          ...(solanaAddr ? [solanaAddr] : []),
-        ];
+        const allAddresses = connectedWallets.map(w => w.address);
 
         const [utxosResult, wpResult, holdingResult] = await Promise.allSettled([
           lucid.utxosAt(contractAddress),
@@ -801,7 +780,7 @@ export default function DonadaPlatform() {
 
     fetchEntries();
     return () => { cancelled = true; };
-  }, [connectedWallets, solanaPublicKey, network]);
+  }, [connectedWallets, network]);
 
   // ----- Load next draw date and latest winner from CSVs -----
   useEffect(() => {
@@ -942,15 +921,10 @@ export default function DonadaPlatform() {
   };
 
   const handleDisconnectFlow = () => {
-    const hasCardano = connectedWallets.length > 0;
-    const hasSolana = solanaConnected;
-    if (connectedWallets.length > 1 || (hasCardano && hasSolana)) {
+    if (connectedWallets.length > 1) {
       setWalletDropdownScreen('disconnect-pick');
-    } else if (hasCardano) {
+    } else {
       disconnectCardano();
-      setWalletDropdownOpen(false);
-    } else if (hasSolana) {
-      disconnectSolana();
       setWalletDropdownOpen(false);
     }
   };
@@ -1637,7 +1611,7 @@ export default function DonadaPlatform() {
           {/* ── Wallet action button + dropdown ── */}
           <div className="wallet-action-wrapper" ref={walletDropdownRef}>
             <button className="select-btn" onClick={handleWalletBtnClick}>
-              {(connectedWallets.length > 0 || solanaConnected) ? 'Wallet Actions' : 'Sign In'}
+              {connectedWallets.length > 0 ? 'Wallet Actions' : 'Sign In'}
             </button>
 
             {walletDropdownOpen && walletDropdownScreen === 'main' && (
@@ -1663,20 +1637,7 @@ export default function DonadaPlatform() {
                     )}
                   </div>
                 ))}
-                {solanaConnected && (
-                  <div
-                    className="wallet-dropdown-item wallet-dropdown-item--connected"
-                    style={{ '--wallet-color': SOLANA_BRAND_COLORS[solanaWallet?.adapter.name.toLowerCase() ?? ''] ?? '#9945ff' } as React.CSSProperties}
-                  >
-                    <div className="wallet-dropdown-connected-inner">
-                      <span className="wallet-dropdown-connected-name">{solanaWallet?.adapter.name ?? 'Solana'}</span>
-                      <span className="wallet-dropdown-connected-addr">
-                        ◎ {solanaPublicKey!.toBase58().slice(0, 4)}…{solanaPublicKey!.toBase58().slice(-4)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-                {(connectedWallets.length > 0 || solanaConnected) && (connectedWallets.length === 0 || !solanaConnected) && (
+                {connectedWallets.length > 0 && (
                   <div className="wallet-dropdown-divider" />
                 )}
                 {connectedWallets.length === 0 && (
@@ -1684,12 +1645,7 @@ export default function DonadaPlatform() {
                     Connect Cardano
                   </button>
                 )}
-                {!solanaConnected && (
-                  <button className="wallet-dropdown-item" onClick={() => setWalletDropdownScreen('add-solana')}>
-                    Connect Solana
-                  </button>
-                )}
-                {(connectedWallets.length > 0 || solanaConnected) && (
+                {connectedWallets.length > 0 && (
                   <>
                     <div className="wallet-dropdown-divider" />
                     <button className="wallet-dropdown-item wallet-dropdown-item--danger" onClick={handleDisconnectFlow}>
@@ -1726,30 +1682,6 @@ export default function DonadaPlatform() {
               </div>
             )}
 
-            {walletDropdownOpen && walletDropdownScreen === 'add-solana' && (
-              <div className="wallet-dropdown">
-                <button className="wallet-dropdown-back" onClick={() => setWalletDropdownScreen('main')}>← Back</button>
-                <p className="wallet-dropdown-label">Choose Solana Wallet</p>
-                {solanaWallets.filter(w => w.readyState === 'Installed').map(w => (
-                  <button
-                    key={w.adapter.name}
-                    className="wallet-dropdown-item"
-                    onClick={() => {
-                      selectSolanaWallet(w.adapter.name);
-                      connectSolana().catch(console.error);
-                      setWalletDropdownOpen(false);
-                    }}
-                  >
-                    <img src={w.adapter.icon} alt={w.adapter.name} className="wallet-dropdown-icon" />
-                    {w.adapter.name}
-                  </button>
-                ))}
-                {solanaWallets.filter(w => w.readyState === 'Installed').length === 0 && (
-                  <p className="wallet-dropdown-empty">No Solana wallet detected</p>
-                )}
-              </div>
-            )}
-
             {walletDropdownOpen && walletDropdownScreen === 'disconnect-pick' && (
               <div className="wallet-dropdown">
                 <button className="wallet-dropdown-back" onClick={() => setWalletDropdownScreen('main')}>← Back</button>
@@ -1763,18 +1695,10 @@ export default function DonadaPlatform() {
                     ◈ {cw.name} ({cw.address.slice(0, 8)}…)
                   </button>
                 ))}
-                {solanaConnected && (
-                  <button
-                    className="wallet-dropdown-item wallet-dropdown-item--danger"
-                    onClick={() => { disconnectSolana(); setWalletDropdownOpen(false); }}
-                  >
-                    ◎ Solana
-                  </button>
-                )}
                 <div className="wallet-dropdown-divider" />
                 <button
                   className="wallet-dropdown-item wallet-dropdown-item--danger"
-                  onClick={() => { disconnectCardano(); disconnectSolana(); setWalletDropdownOpen(false); }}
+                  onClick={() => { disconnectCardano(); setWalletDropdownOpen(false); }}
                 >
                   Disconnect All
                 </button>
