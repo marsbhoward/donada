@@ -1586,6 +1586,263 @@ button:focus-visible {
   overflow: hidden;
 }
 
+/* ── Unified wallet action dropdown ─────────────────────────────────────── */
+.wallet-action-wrapper {
+  position: relative;
+}
+
+.wallet-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 188px;
+  border-radius: 12px;
+  padding: 6px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: linear-gradient(160deg, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.42) 55%, rgba(255,255,255,0.64) 100%);
+  backdrop-filter: blur(32px) saturate(2.0) brightness(1.06);
+  -webkit-backdrop-filter: blur(32px) saturate(2.0) brightness(1.06);
+  border: 1px solid rgba(255,255,255,0.80);
+  border-top-color: rgba(255,255,255,1);
+  border-left-color: rgba(255,255,255,0.90);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,1),
+    inset 1px 0 0 rgba(255,255,255,0.70),
+    inset 0 -1px 0 rgba(255,255,255,0.30),
+    0 8px 32px rgba(0,0,0,0.09),
+    0 2px 5px rgba(0,0,0,0.06);
+}
+
+.dark-mode .wallet-dropdown {
+  background: linear-gradient(160deg, rgba(30,30,30,0.92) 0%, rgba(20,20,20,0.72) 55%, rgba(28,28,28,0.88) 100%);
+  border-color: rgba(255,255,255,0.12);
+  border-top-color: rgba(255,255,255,0.18);
+  border-left-color: rgba(255,255,255,0.14);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255,255,255,0.10),
+    inset 1px 0 0 rgba(255,255,255,0.06),
+    0 8px 32px rgba(0,0,0,0.40),
+    0 2px 8px rgba(0,0,0,0.25);
+}
+
+/* Base row — used for both div (info) and button (action) */
+.wallet-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-family: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  line-height: 1.2;
+  box-sizing: border-box;
+}
+
+button.wallet-dropdown-item:hover {
+  background: rgba(0,0,0,0.06);
+}
+
+.dark-mode button.wallet-dropdown-item:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+/* Connected wallet rows — name shown by default, address revealed on hover */
+.wallet-dropdown-item--connected {
+  cursor: default;
+  overflow: hidden;
+}
+
+.wallet-dropdown-item--connected:hover {
+  background: color-mix(in srgb, var(--wallet-color, #888) 14%, transparent);
+}
+
+/* Fixed-height container so the row doesn't jump between name and address */
+.wallet-dropdown-connected-inner {
+  position: relative;
+  flex: 1;
+  height: 1.15em;
+  overflow: hidden;
+}
+
+.wallet-dropdown-connected-name,
+.wallet-dropdown-connected-addr {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+/* Default: name visible, address waiting below */
+.wallet-dropdown-connected-name {
+  opacity: 1;
+  transform: translateY(0);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.wallet-dropdown-connected-addr {
+  opacity: 0;
+  transform: translateY(7px);
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
+/* Hover: name exits up, address enters from below */
+.wallet-dropdown-item--connected:hover .wallet-dropdown-connected-name {
+  opacity: 0;
+  transform: translateY(-7px);
+}
+
+.wallet-dropdown-item--connected:hover .wallet-dropdown-connected-addr {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 0.05s;
+}
+
+/* Add-wallet "+" button — desktop only, fades in on row hover */
+.wallet-dropdown-add-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  padding: 0;
+  margin-left: 6px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .wallet-dropdown-add-btn {
+    display: flex;
+  }
+  .wallet-dropdown-item--connected:hover .wallet-dropdown-add-btn {
+    opacity: 0.6;
+  }
+  .wallet-dropdown-add-btn:hover {
+    opacity: 1 !important;
+  }
+}
+
+/* Danger rows (disconnect) */
+.wallet-dropdown-item--danger {
+  color: #c0392b;
+}
+
+.dark-mode .wallet-dropdown-item--danger {
+  color: #e74c3c;
+}
+
+.wallet-dropdown-divider {
+  height: 1px;
+  background: rgba(0,0,0,0.08);
+  margin: 4px 8px;
+}
+
+.dark-mode .wallet-dropdown-divider {
+  background: rgba(255,255,255,0.10);
+}
+
+/* Back button for sub-screens */
+.wallet-dropdown-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  font-size: 0.78rem;
+  font-family: inherit;
+  color: inherit;
+  opacity: 0.5;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wallet-dropdown-back:hover {
+  opacity: 1;
+}
+
+/* Sub-screen label */
+.wallet-dropdown-label {
+  font-size: 0.72rem;
+  opacity: 0.45;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 12px 4px;
+  margin: 0;
+}
+
+/* Wallet icon inside dropdown rows */
+.wallet-dropdown-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.wallet-dropdown-icon-fallback {
+  width: 18px;
+  height: 18px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* Empty state for Solana sub-screen */
+.wallet-dropdown-empty {
+  font-size: 0.78rem;
+  opacity: 0.5;
+  text-align: center;
+  padding: 8px 12px;
+  margin: 0;
+}
+
+.wallet-dropdown-hint {
+  font-size: 0.73rem;
+  opacity: 0.55;
+  padding: 2px 12px 6px;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.wallet-dropdown-notice {
+  font-size: 0.73rem;
+  color: #c0392b;
+  padding: 2px 12px 6px;
+  margin: 0;
+  line-height: 1.35;
+}
+
 /* App container always fills full viewport */
 .app-container {
   width: 100%;
