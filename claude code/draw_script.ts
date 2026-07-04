@@ -173,8 +173,9 @@ function decodeDatum(utxo: UTxO): RentalDatum {
 
 // ── Draw date helpers ─────────────────────────────────────────────────────────
 
-const CSV_PATH         = join(__dirname, '..', 'public', 'data', 'drawDates.csv');
-const WINNERS_CSV_PATH = join(__dirname, '..', 'public', 'data', 'winners.csv');
+const CSV_PATH          = join(__dirname, '..', 'public', 'data', 'drawDates.csv');
+const WINNERS_CSV_PATH  = join(__dirname, '..', 'public', 'data', 'winners.csv');
+const SOCIALS_CSV_PATH  = join(__dirname, '..', 'public', 'data', 'socials_participants.csv');
 
 function parseChicagoTime(year: number, month: number, day: number, hour: number, minute: number): Date {
   for (const offsetHours of [5, 6]) {
@@ -283,10 +284,13 @@ function markDrawComplete(drawDate: Date, winnerAddress: string): void {
   writeFileSync(WINNERS_CSV_PATH, winnersContent.trimEnd() + '\n' + winnerLine + '\n');
   console.log(`Recorded winner ${winnerAddress} in winners.csv.`);
 
+  writeFileSync(SOCIALS_CSV_PATH, 'address\n');
+  console.log('Flushed socials_participants.csv.');
+
   try {
     execSync('git config user.email "actions@github.com"', { cwd: repoRoot });
     execSync('git config user.name "GitHub Actions"',      { cwd: repoRoot });
-    execSync('git add public/data/drawDates.csv public/data/winners.csv', { cwd: repoRoot });
+    execSync('git add public/data/drawDates.csv public/data/winners.csv public/data/socials_participants.csv', { cwd: repoRoot });
     execSync(
       `git commit -m ${JSON.stringify(`Mark draw complete: ${drawDate.toISOString()}`)}`,
       { cwd: repoRoot },
@@ -375,7 +379,7 @@ async function fetchLiveNftHolders(
 
 function loadWalletParticipants(): string[] {
   try {
-    const path = join(__dirname, '..', 'public', 'data', 'wallet_participants.csv');
+    const path = SOCIALS_CSV_PATH;
     const seen = new Set<string>();
     return readFileSync(path, 'utf-8').trim().split('\n').slice(1)
       .map(l => l.trim().replace(/^"|"$/g, ''))
