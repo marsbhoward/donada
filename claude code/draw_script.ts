@@ -346,9 +346,16 @@ async function fetchLiveNftHolders(
 ): Promise<Array<{ address: string; assetId: string }>> {
   let assets: Array<{ asset: string }> = [];
   for (let page = 1; ; page++) {
-    const pageData = await blockfrostGet<Array<{ asset: string }>>(
-      `/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`
-    );
+    let pageData: Array<{ asset: string }>;
+    try {
+      pageData = await blockfrostGet<Array<{ asset: string }>>(
+        `/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`
+      );
+    } catch (err) {
+      // 404 means no assets minted under this policy yet
+      if ((err as Error).message.includes('404')) break;
+      throw err;
+    }
     assets = assets.concat(pageData);
     if (pageData.length < 100) break;
   }
