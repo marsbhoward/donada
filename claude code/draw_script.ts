@@ -44,7 +44,7 @@ const __dirname  = dirname(__filename);
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const NETWORK  = (process.env.NETWORK ?? 'Mainnet') as 'Preview' | 'Mainnet';
-const SEED     = (process.env.OWNER_SEED_PHRASE ?? '').replace(/^["']|["']$/g, '').replace(/\s+/g, ' ').trim();
+const SEED     = (process.env.OWNER_SEED_PHRASE ?? '').replace(/^["']|["']$/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 
 const BLOCKFROST_URL = NETWORK === 'Preview'
   ? 'https://cardano-preview.blockfrost.io/api/v0'
@@ -55,7 +55,7 @@ const BLOCKFROST_KEY = NETWORK === 'Preview'
   : (process.env.REACT_APP_BlockFrost_API_KEY_Mainnet ?? '');
 
 const PROJECT_WALLET_ADDRESS = NETWORK === 'Mainnet'
-  ? 'addr1q8nt3e6qwx56e2t7qqv5va396dcdut0s3ytzty8ae040g746ha2ue745hcqxzy9qcrfa08u4yl67p9y7wm9nn7g3e06sjy8q0s'
+  ? 'addr1qxe9axlq4re87nmdzxz3ya8kl768gje8le3qkm285vqgu742dr25m5q8guvug3f5az3aprznessarfr0xpdlvxqpmcjqdrky5q'
   : 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
 const DONADA_POLICY_ID       = 'f3cfe3e83aa282cde0f6d67e79860ccaa55969a4b685db614055fc2f';
 

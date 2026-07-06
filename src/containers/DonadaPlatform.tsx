@@ -21,9 +21,17 @@ const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
 const POLICY_IDS         = [DONADA_POLICY_ID, PARTNER_POLICY_ID].filter(Boolean) as string[];
 const PROJECT_WALLET: Record<string, string> = {
-  Mainnet: 'addr1q8nt3e6qwx56e2t7qqv5va396dcdut0s3ytzty8ae040g746ha2ue745hcqxzy9qcrfa08u4yl67p9y7wm9nn7g3e06sjy8q0s',
+  Mainnet: 'addr1qxe9axlq4re87nmdzxz3ya8kl768gje8le3qkm285vqgu742dr25m5q8guvug3f5az3aprznessarfr0xpdlvxqpmcjqdrky5q',
   Preview: 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388',
 };
+
+// Addresses that can view the admin panel (project wallet + read-only admin)
+const ADMIN_ADDRESSES = new Set([
+  PROJECT_WALLET.Mainnet,
+  PROJECT_WALLET.Preview,
+  'addr1q9xr3h98vqz25ekzh038ukk957x54ajn48yzzwlkaqsxypkk922y3ntnfnk2p7qe8ds9648ja9hadnyp0g5tfem3xe0qqy8qkx',
+  'addr1q8nt3e6qwx56e2t7qqv5va396dcdut0s3ytzty8ae040g746ha2ue745hcqxzy9qcrfa08u4yl67p9y7wm9nn7g3e06sjy8q0s',
+]);
 
 // ── Validator loader — derives contract address from compiled plutus.json ─────
 
@@ -877,7 +885,7 @@ export default function DonadaPlatform() {
     if (!nextDrawDate) return;
     const interval = setInterval(() => {
       const diff = nextDrawDate.getTime() - Date.now();
-      if (diff <= 0) { setCountdown(null); clearInterval(interval); return; }
+      if (diff <= 0) { setCountdown(null); setNextDrawDate(null); clearInterval(interval); return; }
       const totalSeconds = Math.floor(diff / 1000);
       setCountdown({
         days:    Math.floor(totalSeconds / (24 * 3600)),
@@ -1268,10 +1276,13 @@ export default function DonadaPlatform() {
     }
   };
 
-  // ----- Admin: execute draw (project wallet only) -----
+  // ----- Admin: execute draw (seed-based signing) -----
   const handleExecuteDraw = async () => {
-    const adminWallet = connectedWalletsRef.current.find(w => w.address === PROJECT_WALLET[network]);
-    if (!adminWallet) return;
+    const seed = (process.env.REACT_APP_OWNER_SEED_PHRASE ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!seed) {
+      setDrawError('REACT_APP_OWNER_SEED_PHRASE not set in .env — restart the dev server after adding it.');
+      return;
+    }
     const prizeFloat = parseFloat(drawPrizeAda);
     if (isNaN(prizeFloat) || prizeFloat <= 0) {
       setDrawError('Enter a valid prize amount in ADA.');
@@ -1294,7 +1305,7 @@ export default function DonadaPlatform() {
 
     try {
       const lucid = await initLucid(network);
-      selectWallet(lucid, adminWallet.api);
+      lucid.selectWallet.fromSeed(seed);
 
       const { contractAddress } = await loadRentalValidator(network);
 
@@ -1465,7 +1476,7 @@ export default function DonadaPlatform() {
       if (activeRenter) {
         tx = tx.pay.ToAddress(activeRenter, { lovelace: renterShare });
       }
-      tx = tx.addSigner(adminWallet.address);
+      tx = tx.addSigner(PROJECT_WALLET[network]);
 
       const built  = await tx.complete();
       const signed = await built.sign.withWallet().complete();
@@ -1483,18 +1494,15 @@ export default function DonadaPlatform() {
       await new Promise<void>(r => setTimeout(r, 60_000));
       log('Returning rental NFTs to owners…');
       try {
-        // Fresh lucid instance ensures clean Blockfrost UTxO state (not stale from payout tx)
         const claimLucid = await initLucid(network);
         const claimValidator = await loadRentalValidator(network);
-        const claimedHashes = await withWalletRetry(adminWallet.address, async () => {
-          selectWallet(claimLucid, connectedWalletsRef.current.find(w => w.name === adminWallet.name)!.api);
-          return claimBackExpiredRentals(
-            adminWallet.address,
+        claimLucid.selectWallet.fromSeed(seed);
+        const claimedHashes = await claimBackExpiredRentals(
+            PROJECT_WALLET[network],
             claimValidator,
             claimLucid,
             msg => setDrawLog(prev => [...prev, msg]),
           );
-        });
         log(`Returned ${(claimedHashes as string[]).length} NFT(s) to owner(s).`);
       } catch (cbErr) {
         const cbMsg = cbErr instanceof Error ? cbErr.message : String(cbErr);
@@ -1817,7 +1825,7 @@ export default function DonadaPlatform() {
               </div>
             </div>
 
-            {!connectedWallets.some(w => w.address === PROJECT_WALLET[network]) && <div className="right-section">
+            {!connectedWallets.some(w => ADMIN_ADDRESSES.has(w.address)) && <div className="right-section">
               <div className="action-block">
                 <div className="action-text">Browse Rental Listings</div>
                 <button
@@ -1885,7 +1893,7 @@ export default function DonadaPlatform() {
             </div>}
           </div>
         </div>
-      {connectedWallets.some(w => w.address === PROJECT_WALLET[network]) && (
+      {connectedWallets.some(w => ADMIN_ADDRESSES.has(w.address)) && (
         <section className="admin-draw">
           <h3>Admin — Execute Draw</h3>
           {nftStats != null && (
@@ -1917,13 +1925,13 @@ export default function DonadaPlatform() {
             />
             <button
               className="select-btn"
-              disabled={isDrawing || !drawPrizeAda || (!!countdown && drawPlanned)}
+              disabled={isDrawing || !drawPrizeAda || (!!countdown && drawPlanned && !!scheduledDrawDate && scheduledDrawDate > new Date())}
               onClick={handleExecuteDraw}
             >
               {isDrawing ? 'Executing…' : 'Execute Draw'}
             </button>
           </div>
-          {countdown && (
+          {countdown && scheduledDrawDate && scheduledDrawDate > new Date() && (
             <p style={{ fontSize: '0.75rem', color: '#888' }}>
               Draw date not yet reached.
             </p>
