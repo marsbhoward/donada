@@ -498,17 +498,28 @@ async function main() {
   console.log(`Total pool:       ${allParticipants.length}`);
 
   // Step 4 — Entropy from block at draw timestamp
-  const genesis = await blockfrostGet<{ system_start: number | string; slot_length: number }>('/genesis');
-  const systemStartMs = typeof genesis.system_start === 'number'
-    ? genesis.system_start * 1000
-    : new Date(genesis.system_start).getTime();
-  const drawSlot = Math.floor((scheduled.date.getTime() - systemStartMs) / (genesis.slot_length * 1000));
+  // Byron had 20s slots; Shelley onward is 1s. We must account for the era
+  // transition rather than using the Byron genesis start with slot_length=1.
+  const ERA: Record<string, { shelleySlot: number; shelleyUnix: number }> = {
+    Mainnet: { shelleySlot: 4_492_800, shelleyUnix: 1_596_059_091 },
+    Preview: { shelleySlot: 0,         shelleyUnix: 1_563_999_616 },
+  };
+  const era = ERA[NETWORK] ?? ERA.Mainnet;
+  const drawUnix = Math.floor(scheduled.date.getTime() / 1000);
+  const drawSlot = era.shelleySlot + Math.max(0, drawUnix - era.shelleyUnix);
   console.log(`Draw slot: ${drawSlot}`);
 
+  // Use the next block after the draw slot — Blockfrost /blocks/slot/:slot returns the
+  // first block at or after that slot, so a single call is sufficient.
   let entropyBlock: { hash: string; slot: number } | null = null;
-  for (let s = drawSlot; s <= drawSlot + 500 && !entropyBlock; s++) {
-    try { entropyBlock = await blockfrostGet<{ hash: string; slot: number }>(`/blocks/slot/${s}`); }
-    catch { /* empty slot — try next */ }
+  try {
+    entropyBlock = await blockfrostGet<{ hash: string; slot: number }>(`/blocks/slot/${drawSlot}`);
+  } catch {
+    // Some slots have no block — walk forward up to 150 slots (~2.5 min) to find one
+    for (let s = drawSlot + 1; s <= drawSlot + 150 && !entropyBlock; s++) {
+      try { entropyBlock = await blockfrostGet<{ hash: string; slot: number }>(`/blocks/slot/${s}`); }
+      catch { /* empty slot — try next */ }
+    }
   }
   if (!entropyBlock) throw new Error('Could not find a block at the draw slot.');
   console.log(`Entropy block hash: ${entropyBlock.hash}`);
