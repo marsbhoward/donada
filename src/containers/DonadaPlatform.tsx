@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import RentModal from '../components/RentModal';
 import TxConfirmModal from '../components/TxConfirmModal';
-import { fetchNftMetadata } from '../utils/nftMetadata';
+import { fetchNftMetadata, ipfsToHttp, ipfsImgFallback, preloadImages } from '../utils/nftMetadata';
 import { notifyListingCreated, notifyRentalConfirmed } from '../utils/notifications';
 import {
   Lucid, type LucidEvolution, Blockfrost,
@@ -225,8 +225,11 @@ function adaToLovelace(ada: string | number): bigint {
   return BigInt(Math.round(adaFloat * 1_000_000));
 }
 
+// Lists one or more NFTs in a single transaction. Listing outputs don't
+// execute the validator, so the batch size is bounded only by tx size —
+// all NFTs must come from the same signing wallet.
 async function submitListing(
-  nft_asset_name: string,
+  nft_asset_names: string[],
   owner_address: string,
   rental_fee_ada: string | number,
   drawDateMs: number,
@@ -234,29 +237,29 @@ async function submitListing(
   lucid: LucidEvolution,
   network: Network
 ): Promise<string> {
-  const datum: RentalDatum = {
-    nft_policy:     DONADA_POLICY_ID,
-    nft_asset_name,
-    owner:          owner_address,
-    renter:         null,
-    rental_fee:     adaToLovelace(rental_fee_ada),
-    draw_date:      BigInt(drawDateMs),
-    project_wallet: PROJECT_WALLET[network],
-  };
+  let txBuilder = lucid.newTx();
 
-  const tx = await lucid
-    .newTx()
-    .pay.ToContract(
+  for (const nft_asset_name of nft_asset_names) {
+    const datum: RentalDatum = {
+      nft_policy:     DONADA_POLICY_ID,
+      nft_asset_name,
+      owner:          owner_address,
+      renter:         null,
+      rental_fee:     adaToLovelace(rental_fee_ada),
+      draw_date:      BigInt(drawDateMs),
+      project_wallet: PROJECT_WALLET[network],
+    };
+    txBuilder = txBuilder.pay.ToContract(
       contractAddress,
       { kind: 'inline', value: encodeDatum(datum) },
       {
         lovelace: BigInt(2000000),
         [DONADA_POLICY_ID + fromText(nft_asset_name)]: BigInt(1),
       }
-    )
-    .addSigner(owner_address)
-    .complete();
+    );
+  }
 
+  const tx = await txBuilder.addSigner(owner_address).complete();
   const signed = await tx.sign.withWallet().complete();
   return signed.submit();
 }
@@ -330,6 +333,79 @@ async function rentNft(
     success: true,
     txHash,
     message: `Successfully rented "${nftAssetName}". Your wallet is registered for the draw.`,
+  };
+}
+
+// Rents several NFTs in one transaction. Each consumed listing runs the
+// validator once, so the batch is capped well below the tx execution budget
+// (the claim-back path proved 15 inputs fit; renting is heavier, hence 10).
+const BATCH_RENT_CAP = 10;
+
+async function rentNftsBatch(
+  nftAssetNames: string[],
+  renterAddress: string,
+  validator: ValidatorSetup,
+  lucid: LucidEvolution
+): Promise<InteractionResult> {
+  const { contractAddress, compiledCode } = validator;
+  if (nftAssetNames.length === 0) throw new Error('No NFTs selected to rent.');
+  if (nftAssetNames.length > BATCH_RENT_CAP) {
+    throw new Error(`Batch rentals are limited to ${BATCH_RENT_CAP} NFTs per transaction.`);
+  }
+
+  const wantedUnits = new Map(nftAssetNames.map(n => [DONADA_POLICY_ID + fromText(n), n]));
+  const contractUtxos = await lucid.utxosAt(contractAddress);
+  const rentals: Array<{ utxo: UTxO; datum: RentalDatum; unit: string }> = [];
+  for (const u of contractUtxos) {
+    const unit = Object.keys(u.assets).find(k => wantedUnits.has(k));
+    if (!unit) continue;
+    const datum = decodeDatum(u);
+    if (datum.renter !== null) throw new Error(`"${datum.nft_asset_name}" was just rented by someone else — lower your budget or retry.`);
+    if (datum.draw_date <= BigInt(Date.now())) throw new Error(`"${datum.nft_asset_name}" can no longer be rented — the draw date has passed.`);
+    rentals.push({ utxo: u, datum, unit });
+  }
+  if (rentals.length !== nftAssetNames.length) {
+    throw new Error('Some selected listings are no longer available — please retry.');
+  }
+
+  // Aggregate fee payouts per address: the validator sums all outputs to an
+  // address, so one combined output per owner (and one for the project
+  // wallet) satisfies every input while keeping the tx small.
+  const payouts = new Map<string, bigint>();
+  const addPayout = (addr: string, amt: bigint) => payouts.set(addr, (payouts.get(addr) ?? 0n) + amt);
+  for (const { datum } of rentals) {
+    const ownerShare = datum.rental_fee * 90n / 100n;
+    addPayout(datum.owner, ownerShare);
+    addPayout(datum.project_wallet, datum.rental_fee - ownerShare);
+  }
+
+  // validTo must precede the EARLIEST draw date in the batch.
+  const minDrawMs = rentals.reduce((min, r) => r.datum.draw_date < min ? r.datum.draw_date : min, rentals[0].datum.draw_date);
+  const validTo = Math.min(Date.now() + 5 * 60 * 1000, Number(minDrawMs) - 60_000);
+
+  let txBuilder = lucid.newTx()
+    .collectFrom(rentals.map(r => r.utxo), buildRentRedeemer(renterAddress))
+    .attach.SpendingValidator({ type: 'PlutusV3', script: compiledCode });
+
+  for (const { utxo, datum, unit } of rentals) {
+    txBuilder = txBuilder.pay.ToContract(
+      contractAddress,
+      { kind: 'inline', value: encodeDatum({ ...datum, renter: renterAddress }) },
+      { lovelace: utxo.assets.lovelace, [unit]: 1n }
+    );
+  }
+  for (const [addr, amt] of payouts) {
+    txBuilder = txBuilder.pay.ToAddress(addr, { lovelace: amt });
+  }
+
+  const tx = await txBuilder.addSigner(renterAddress).validTo(validTo).complete();
+  const signed = await tx.sign.withWallet().complete();
+  const txHash = await signed.submit();
+
+  return {
+    success: true,
+    txHash,
+    message: `Successfully rented ${rentals.length} NFTs. Your wallet is registered for the draw.`,
   };
 }
 
@@ -425,27 +501,35 @@ async function fetchLiveNftHolders(
   };
 
   // Collect all assets under the policy (paginated, 100/page)
-  let assets: Array<{ asset: string }> = [];
+  const assets: Array<{ asset: string }> = [];
   for (let page = 1; ; page++) {
     const page_data = await bf<Array<{ asset: string }>>(`/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`);
-    assets = assets.concat(page_data);
+    assets.push(...page_data);
     if (page_data.length < 100) break;
   }
 
-  const holders: Array<{ address: string; assetId: string }> = [];
-  for (const { asset } of assets) {
-    const assetId = toText(asset.slice(56));
-    let addresses: Array<{ address: string }> = [];
-    for (let page = 1; ; page++) {
-      const page_data = await bf<Array<{ address: string }>>(`/assets/${asset}/addresses?page=${page}&count=100`);
-      addresses = addresses.concat(page_data);
-      if (page_data.length < 100) break;
+  // One addresses-lookup per asset — run through a small worker pool instead
+  // of serially (Blockfrost sustains 10 req/s; 5 workers stays well under).
+  const perAsset: Array<Array<{ address: string; assetId: string }>> = new Array(assets.length);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (nextIdx < assets.length) {
+      const i = nextIdx++;
+      const { asset } = assets[i];
+      const assetId = toText(asset.slice(56));
+      const addresses: Array<{ address: string }> = [];
+      for (let page = 1; ; page++) {
+        const page_data = await bf<Array<{ address: string }>>(`/assets/${asset}/addresses?page=${page}&count=100`);
+        addresses.push(...page_data);
+        if (page_data.length < 100) break;
+      }
+      perAsset[i] = addresses
+        .filter(({ address }) => !excludeAddresses.has(address))
+        .map(({ address }) => ({ address, assetId }));
     }
-    for (const { address } of addresses) {
-      if (!excludeAddresses.has(address)) holders.push({ address, assetId });
-    }
-  }
-  return holders;
+  };
+  await Promise.all(Array.from({ length: Math.min(5, assets.length) }, worker));
+  return perAsset.flat();
 }
 
 async function cancelListingNft(
@@ -480,6 +564,22 @@ async function cancelListingNft(
 function selectWallet(lucid: LucidEvolution, cip30Api: unknown): void {
   lucid.selectWallet.fromAPI(cip30Api as WalletApi);
 }
+
+// Serialises operations that select a wallet on the shared Lucid instance.
+// Background prefetch and the entries effect both run selectWallet + query
+// concurrently; without a lock one effect's selection can hijack another's
+// in-flight query and attribute UTxOs to the wrong wallet.
+let _walletOpChain: Promise<unknown> = Promise.resolve();
+function withWalletLock<T>(op: () => Promise<T>): Promise<T> {
+  const run = _walletOpChain.then(op, op);
+  _walletOpChain = run.then((): void => undefined, (): void => undefined);
+  return run;
+}
+
+// Stable identity for an NFT list — used to skip state updates (and the modal
+// resets they trigger) when a background revalidation returns identical data.
+const nftListKey = (list: NftAsset[]) =>
+  list.map(n => `${n.policyId}:${n.assetName}:${n.rentalFee ?? ''}:${n.walletKey ?? ''}`).sort().join('|');
 
 // Extracts a readable message from any thrown value, including CIP-30 APIError
 // objects ({ code: number, info: string }) that aren't Error instances.
@@ -565,12 +665,14 @@ export default function DonadaPlatform() {
 
   // Owner listing flow
   const [ownedNfts, setOwnedNfts] = useState<NftAsset[]>([]);
+  const [ownedNftsReady, setOwnedNftsReady] = useState(false); // background prefetch landed
   const [loadingOwnedNfts, setLoadingOwnedNfts] = useState(false);
   const [isListing, setIsListing] = useState(false);
   const [listingError, setListingError] = useState<string | null>(null);
 
   // Renter flow
   const [listedNfts, setListedNfts] = useState<NftAsset[]>([]);
+  const [listedNftsReady, setListedNftsReady] = useState(false); // background prefetch landed
   const [loadingListedNfts, setLoadingListedNfts] = useState(false);
   const [isRenting, setIsRenting] = useState(false);
   const [rentError, setRentError] = useState<string | null>(null);
@@ -647,55 +749,61 @@ export default function DonadaPlatform() {
       try {
         const { url: bfBase, apiKey: bfKey } = blockfrostConfig(network);
 
-        // Total NFTs minted under the policy (paginated); capture first asset for image
-        let total = 0;
-        let firstAsset: string | null = null;
-        for (let page = 1; ; page++) {
-          const res = await fetch(
-            `${bfBase}/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`,
-            { headers: { project_id: bfKey } },
-          );
-          if (!res.ok) break;
-          const data: Array<{ asset: string }> = await res.json();
-          if (page === 1 && data.length > 0) firstAsset = data[0].asset;
-          total += data.length;
-          if (data.length < 100) break;
-        }
+        // Policy scan (mint count + featured image) and contract scan are
+        // independent Blockfrost queries — run them concurrently.
+        const policyScan = (async () => {
+          let total = 0;
+          let firstAsset: string | null = null;
+          for (let page = 1; ; page++) {
+            const res = await fetch(
+              `${bfBase}/assets/policy/${DONADA_POLICY_ID}?page=${page}&count=100`,
+              { headers: { project_id: bfKey } },
+            );
+            if (!res.ok) break;
+            const data: Array<{ asset: string }> = await res.json();
+            if (page === 1 && data.length > 0) firstAsset = data[0].asset;
+            total += data.length;
+            if (data.length < 100) break;
+          }
 
-        // Featured image: fetch first asset's on-chain CIP-25 metadata
-        if (firstAsset && !cancelled) {
-          const assetRes = await fetch(`${bfBase}/assets/${firstAsset}`, {
-            headers: { project_id: bfKey },
-          });
-          if (assetRes.ok) {
-            const assetData = await assetRes.json();
-            const onchainMeta = assetData.onchain_metadata ?? {};
-            const rawImage = onchainMeta.image;
-            if (rawImage && !cancelled) {
-              const flat = Array.isArray(rawImage) ? rawImage.join('') : String(rawImage);
-              setFeaturedNftImage(flat.replace('ipfs://', 'https://ipfs.io/ipfs/'));
-            }
-            if (onchainMeta.Collection && !cancelled) {
-              setCollectionName(String(onchainMeta.Collection));
+          // Featured image: first asset's on-chain CIP-25 metadata
+          if (firstAsset && !cancelled) {
+            const assetRes = await fetch(`${bfBase}/assets/${firstAsset}`, {
+              headers: { project_id: bfKey },
+            });
+            if (assetRes.ok) {
+              const assetData = await assetRes.json();
+              const onchainMeta = assetData.onchain_metadata ?? {};
+              const rawImage = onchainMeta.image;
+              if (rawImage && !cancelled) {
+                setFeaturedNftImage(ipfsToHttp(rawImage, 900));
+              }
+              if (onchainMeta.Collection && !cancelled) {
+                setCollectionName(String(onchainMeta.Collection));
+              }
             }
           }
-        }
+          return total;
+        })();
 
-        // Open rental listings at the contract (no renter registered yet)
-        const lucid = await initLucid(network);
-        const { contractAddress } = await loadRentalValidator(network);
-        const utxos = await lucid.utxosAt(contractAddress);
-        const now = BigInt(Date.now());
-        let openRentals = 0, activeRentals = 0, expiredRentals = 0;
-        for (const u of utxos) {
-          try {
-            const d = decodeDatum(u);
-            if (d.draw_date <= now) { expiredRentals++; continue; }
-            if (d.renter === null) openRentals++; else activeRentals++;
-          } catch { /* skip malformed UTxOs */ }
-        }
+        const contractScan = (async () => {
+          const lucid = await initLucid(network);
+          const { contractAddress } = await loadRentalValidator(network);
+          const utxos = await lucid.utxosAt(contractAddress);
+          const now = BigInt(Date.now());
+          let openRentals = 0, activeRentals = 0, expiredRentals = 0;
+          for (const u of utxos) {
+            try {
+              const d = decodeDatum(u);
+              if (d.draw_date <= now) { expiredRentals++; continue; }
+              if (d.renter === null) openRentals++; else activeRentals++;
+            } catch { /* skip malformed UTxOs */ }
+          }
+          return { openRentals, activeRentals, expiredRentals };
+        })();
 
-        if (!cancelled) setNftStats({ total, openRentals, activeRentals, expiredRentals });
+        const [total, rentals] = await Promise.all([policyScan, contractScan]);
+        if (!cancelled) setNftStats({ total, ...rentals });
       } catch (err) {
         console.error('Failed to fetch NFT stats:', err);
       }
@@ -704,37 +812,11 @@ export default function DonadaPlatform() {
     return () => { cancelled = true; };
   }, [network]);
 
-  // ----- Check if any connected wallet has cancellable listings -----
-  useEffect(() => {
-    if (connectedWallets.length === 0) { setHasActiveListings(false); return; }
-    let cancelled = false;
-    const check = async () => {
-      try {
-        const lucid = await initLucid(network);
-        const { contractAddress } = await loadRentalValidator(network);
-        const utxos = await lucid.utxosAt(contractAddress);
-        const payHashes = new Set(
-          connectedWallets
-            .map(w => getAddressDetails(w.address).paymentCredential?.hash)
-            .filter((h): h is string => !!h)
-        );
-        const hasAny = utxos.some(u => {
-          try {
-            const d = decodeDatum(u);
-            const ownerPayHash = getAddressDetails(d.owner).paymentCredential?.hash;
-            return ownerPayHash != null && payHashes.has(ownerPayHash) && d.renter === null;
-          } catch { return false; }
-        });
-        if (!cancelled) setHasActiveListings(hasAny);
-      } catch { if (!cancelled) setHasActiveListings(false); }
-    };
-    check();
-    return () => { cancelled = true; };
-  }, [connectedWallets, network]);
-
   // ----- Compute all connected wallets' total raffle entries -----
+  // Also derives hasActiveListings from the same contract query — previously a
+  // separate effect issued a second identical utxosAt on every wallet change.
   useEffect(() => {
-    if (connectedWallets.length === 0) { setUserEntries(null); return; }
+    if (connectedWallets.length === 0) { setUserEntries(null); setHasActiveListings(false); return; }
     let cancelled = false;
 
     const fetchEntries = async () => {
@@ -742,33 +824,49 @@ export default function DonadaPlatform() {
         const lucid = await initLucid(network);
         const { contractAddress } = await loadRentalValidator(network);
         const allAddresses = connectedWallets.map(w => w.address);
+        const payHashes = new Set(
+          connectedWallets
+            .map(w => getAddressDetails(w.address).paymentCredential?.hash)
+            .filter((h): h is string => !!h)
+        );
 
         const [utxosResult, wpResult, holdingResult] = await Promise.allSettled([
           lucid.utxosAt(contractAddress),
           fetch('/data/socials_participants.csv').then(r => r.text()),
           (async (): Promise<number> => {
-            const counts = await Promise.all(connectedWalletsRef.current.map(async w => {
-              const tempLucid = await initLucid(network);
-              selectWallet(tempLucid, w.api);
-              const utxos = await tempLucid.wallet().getUtxos();
-              return utxos.reduce((n, u) =>
-                n + Object.keys(u.assets).filter(unit => unit.startsWith(DONADA_POLICY_ID)).length
-              , 0);
-            }));
-            return counts.reduce((a, b) => a + b, 0);
+            // Sequential + locked: initLucid returns a single shared instance,
+            // so a concurrent selectWallet (here or in the NFT prefetch) would
+            // race and count the wrong wallet's UTxOs.
+            let total = 0;
+            for (const w of connectedWalletsRef.current) {
+              total += await withWalletLock(async () => {
+                const walletLucid = await initLucid(network);
+                selectWallet(walletLucid, w.api);
+                const utxos = await walletLucid.wallet().getUtxos();
+                return utxos.reduce((n, u) =>
+                  n + Object.keys(u.assets).filter(unit => unit.startsWith(DONADA_POLICY_ID)).length
+                , 0);
+              });
+            }
+            return total;
           })(),
         ]);
 
-        let listed = 0, renting = 0;
+        let listed = 0, renting = 0, hasCancellable = false;
         if (utxosResult.status === 'fulfilled') {
           for (const u of utxosResult.value) {
             try {
               const d = decodeDatum(u);
               if (allAddresses.includes(d.owner)) listed++;
               if (d.renter && allAddresses.includes(d.renter)) renting++;
+              if (d.renter === null) {
+                const ownerPayHash = getAddressDetails(d.owner).paymentCredential?.hash;
+                if (ownerPayHash != null && payHashes.has(ownerPayHash)) hasCancellable = true;
+              }
             } catch { /* skip malformed */ }
           }
         }
+        if (!cancelled) setHasActiveListings(hasCancellable);
 
         let participated = 0, freeEntrySnapshotTaken = false;
         if (wpResult.status === 'fulfilled') {
@@ -1053,35 +1151,120 @@ export default function DonadaPlatform() {
     setRentMode(false);
   };
 
-  // ----- Owner: load NFTs from all connected wallets then open listing modal -----
+  // ----- Data loaders (shared by background prefetch and modal-open paths) -----
+
+  const fetchOwnedNftsData = async (): Promise<NftAsset[]> => {
+    const allNfts: NftAsset[] = [];
+    for (const w of connectedWalletsRef.current) {
+      const walletUtxos = await withWalletLock(async () => {
+        const lucid = await initLucid(network);
+        selectWallet(lucid, w.api);
+        return withWalletRetry(w.address, () => lucid.wallet().getUtxos());
+      });
+      const seen = new Set<string>();
+      walletUtxos.flatMap(u =>
+        Object.keys(u.assets).filter(unit => {
+          if (!POLICY_IDS.some(p => unit.startsWith(p))) return false;
+          if (seen.has(unit)) return false;
+          seen.add(unit);
+          return true;
+        }).map(unit => ({ policyId: unit.slice(0, 56), assetName: toText(unit.slice(56)), walletKey: w.address } as NftAsset))
+      ).forEach(n => allNfts.push(n));
+    }
+    return (await Promise.all(
+      allNfts.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName, network))
+    )).map((r: any, i: number) =>
+      r.error
+        ? { ...allNfts[i], name: allNfts[i].assetName } as NftAsset
+        : { ...r, walletKey: allNfts[i].walletKey } as NftAsset
+    );
+  };
+
+  const fetchListedNftsData = async (): Promise<NftAsset[]> => {
+    // Read-only Lucid — no wallet selection needed for querying UTxOs.
+    const lucid = await initLucid(network);
+    const { contractAddress } = await loadRentalValidator(network);
+    const utxos = await lucid.utxosAt(contractAddress);
+
+    const available = utxos.flatMap((u) => {
+      if (!u.datum) return [];
+      try {
+        const datum = decodeDatum(u);
+        if (datum.renter !== null) return [];                      // already rented
+        if (datum.draw_date <= BigInt(Date.now())) return [];      // draw date passed
+        return [{
+          policyId: datum.nft_policy,
+          assetName: datum.nft_asset_name,
+          name: datum.nft_asset_name,
+          rentalFee: datum.rental_fee,
+        } as NftAsset];
+      } catch {
+        return [];
+      }
+    });
+
+    return Promise.all(
+      available.map(async (a: NftAsset) => {
+        const meta = await fetchNftMetadata(a.policyId, a.assetName, network);
+        return (meta as any).error
+          ? a
+          : { ...a, image: (meta as any).image ?? undefined, name: (meta as any).name ?? a.name } as NftAsset;
+      })
+    );
+  };
+
+  // Quiet refresh: only touch state (which resets the open modal's carousel)
+  // when the data actually changed.
+  const revalidateOwnedNfts = () => {
+    fetchOwnedNftsData()
+      .then(fresh => setOwnedNfts(prev => nftListKey(prev) === nftListKey(fresh) ? prev : fresh))
+      .catch(() => { /* background refresh — modal already has usable data */ });
+  };
+  const revalidateListedNfts = () => {
+    fetchListedNftsData()
+      .then(fresh => setListedNfts(prev => nftListKey(prev) === nftListKey(fresh) ? prev : fresh))
+      .catch(() => { /* background refresh — modal already has usable data */ });
+  };
+
+  // ----- Prefetch: owned NFTs load in the background on wallet connect, and
+  // rental listings on page load, so the modals open without a fetch delay.
+  useEffect(() => {
+    if (connectedWallets.length === 0) { setOwnedNfts([]); setOwnedNftsReady(false); return; }
+    let cancelled = false;
+    setOwnedNftsReady(false);
+    fetchOwnedNftsData()
+      .then(nfts => { if (!cancelled) { setOwnedNfts(nfts); setOwnedNftsReady(true); preloadImages(nfts); } })
+      .catch(err => console.warn('Owned-NFT prefetch failed — will load on demand:', err));
+    return () => { cancelled = true; };
+  }, [connectedWallets, network]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    let cancelled = false;
+    setListedNftsReady(false);
+    fetchListedNftsData()
+      .then(nfts => { if (!cancelled) { setListedNfts(nfts); setListedNftsReady(true); preloadImages(nfts); } })
+      .catch(err => console.warn('Listings prefetch failed — will load on demand:', err));
+    return () => { cancelled = true; };
+  }, [network]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ----- Owner: open listing modal (instant when prefetched) -----
   const loadOwnedNftsForListing = async () => {
     if (connectedWalletsRef.current.length === 0) return;
     setListingError(null);
+
+    if (ownedNftsReady) {
+      setRentMode(false);
+      setShowRentModal(true);
+      revalidateOwnedNfts(); // stale-while-revalidate
+      return;
+    }
+
+    // Prefetch hasn't finished yet — load with the spinner as before.
     try {
       setLoadingOwnedNfts(true);
-      const allNfts: NftAsset[] = [];
-      for (const w of connectedWalletsRef.current) {
-        const lucid = await initLucid(network);
-        selectWallet(lucid, w.api);
-        const walletUtxos = await withWalletRetry(w.address, () => lucid.wallet().getUtxos());
-        const seen = new Set<string>();
-        walletUtxos.flatMap(u =>
-          Object.keys(u.assets).filter(unit => {
-            if (!POLICY_IDS.some(p => unit.startsWith(p))) return false;
-            if (seen.has(unit)) return false;
-            seen.add(unit);
-            return true;
-          }).map(unit => ({ policyId: unit.slice(0, 56), assetName: toText(unit.slice(56)), walletKey: w.address } as NftAsset))
-        ).forEach(n => allNfts.push(n));
-      }
-      const enriched = (await Promise.all(
-        allNfts.map((a: NftAsset) => fetchNftMetadata(a.policyId, a.assetName, network))
-      )).map((r: any, i: number) =>
-        r.error
-          ? { ...allNfts[i], name: allNfts[i].assetName } as NftAsset
-          : { ...r, walletKey: allNfts[i].walletKey } as NftAsset
-      );
-      setOwnedNfts(enriched);
+      const nfts = await fetchOwnedNftsData();
+      setOwnedNfts(nfts);
+      setOwnedNftsReady(true);
       setRentMode(false);
       setShowRentModal(true);
     } catch (err) {
@@ -1094,42 +1277,22 @@ export default function DonadaPlatform() {
     }
   };
 
-  // ----- Renter: load available listings from the contract then open rent modal -----
+  // ----- Renter: open rent modal (instant when prefetched) -----
   const loadListedNfts = async () => {
     setRentError(null);
+
+    if (listedNftsReady) {
+      setRentMode(true);
+      setShowRentModal(true);
+      revalidateListedNfts(); // stale-while-revalidate
+      return;
+    }
+
     try {
       setLoadingListedNfts(true);
-      // Read-only Lucid — no wallet selection needed for querying UTxOs.
-      const lucid = await initLucid(network);
-      const { contractAddress } = await loadRentalValidator(network);
-      const utxos = await lucid.utxosAt(contractAddress);
-
-      const available = utxos.flatMap((u) => {
-        if (!u.datum) return [];
-        try {
-          const datum = decodeDatum(u);
-          if (datum.renter !== null) return [];                      // already rented
-          if (datum.draw_date <= BigInt(Date.now())) return [];      // draw date passed
-          return [{
-            policyId: datum.nft_policy,
-            assetName: datum.nft_asset_name,
-            name: datum.nft_asset_name,
-            rentalFee: datum.rental_fee,
-          } as NftAsset];
-        } catch {
-          return [];
-        }
-      });
-
-      const enriched = await Promise.all(
-        available.map(async (a: NftAsset) => {
-          const meta = await fetchNftMetadata(a.policyId, a.assetName, network);
-          return (meta as any).error
-            ? a
-            : { ...a, image: (meta as any).image ?? undefined, name: (meta as any).name ?? a.name } as NftAsset;
-        })
-      );
-      setListedNfts(enriched);
+      const nfts = await fetchListedNftsData();
+      setListedNfts(nfts);
+      setListedNftsReady(true);
       setRentMode(true);
       setShowRentModal(true);
     } catch (err) {
@@ -1143,10 +1306,15 @@ export default function DonadaPlatform() {
   };
 
   // ----- Owner: confirm listing modal → submit listing transaction -----
-  const handleCreateListing = async ({ nft, rentalPrice }: { nft: NftAsset; rentalPrice: string }) => {
+  // quantity > 1 lists the selected NFT plus the next NFTs from the same
+  // wallet (one tx = one signer) at the same price.
+  const handleCreateListing = async ({ nft, rentalPrice, quantity = 1 }: { nft: NftAsset; rentalPrice: string; quantity?: number }) => {
     if (connectedWallets.length === 0) { closeModal(); setShowConnectPrompt(true); return; }
     if (!nextDrawDate) return;
     const ownerAddr = nft.walletKey ?? connectedWalletsRef.current[0].address;
+    const sameWallet = ownedNfts.filter(n => (n.walletKey ?? connectedWalletsRef.current[0].address) === ownerAddr);
+    const batch = [nft, ...sameWallet.filter(n => n.assetName !== nft.assetName)].slice(0, Math.max(1, quantity));
+    const names = batch.map(n => n.name ?? n.assetName);
     closeModal();
     setIsListing(true);
     setListingError(null);
@@ -1156,13 +1324,16 @@ export default function DonadaPlatform() {
         const w = connectedWalletsRef.current.find(cw => cw.address === ownerAddr)!;
         selectWallet(lucid, w.api);
         const { contractAddress } = await loadRentalValidator(network);
-        return submitListing(nft.name ?? nft.assetName, w.address, rentalPrice, Math.floor(nextDrawDate.getTime()), contractAddress, lucid, network);
+        return submitListing(names, w.address, rentalPrice, Math.floor(nextDrawDate.getTime()), contractAddress, lucid, network);
       });
-      setTxConfirm({ title: 'Listing Created!', txHash });
+      const n = names.length;
+      setTxConfirm({ title: n > 1 ? `${n} Listings Created!` : 'Listing Created!', txHash });
       setHasActiveListings(true);
-      setNftStats(prev => prev ? { ...prev, openRentals: prev.openRentals + 1 } : prev);
-      setUserEntries(prev => prev ? { ...prev, listed: prev.listed + 1, holding: Math.max(0, prev.holding - 1), total: prev.total } : prev);
-      notifyListingCreated({ nftName: nft.name ?? nft.assetName, price: rentalPrice, owner: ownerAddr, txHash });
+      setNftStats(prev => prev ? { ...prev, openRentals: prev.openRentals + n } : prev);
+      setUserEntries(prev => prev ? { ...prev, listed: prev.listed + n, holding: Math.max(0, prev.holding - n), total: prev.total } : prev);
+      // Keep the prefetched cache accurate: listed NFTs have left the wallet.
+      setOwnedNfts(prev => prev.filter(o => !names.includes(o.name ?? o.assetName)));
+      notifyListingCreated({ nftName: n > 1 ? `${names[0]} +${n - 1} more` : names[0], price: rentalPrice, owner: ownerAddr, txHash });
     } catch (err) {
       console.error('Failed to list NFT:', err);
       raiseWalletNotice(err);
@@ -1191,6 +1362,8 @@ export default function DonadaPlatform() {
       setTxConfirm({ title: 'NFT Rented!', txHash: result.txHash });
       setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - 1), activeRentals: prev.activeRentals + 1 } : prev);
       setUserEntries(prev => prev ? { ...prev, renting: prev.renting + 1, total: prev.total + 1 } : prev);
+      // Keep the prefetched cache accurate: this listing is no longer available.
+      setListedNfts(prev => prev.filter(l => l.assetName !== nft.assetName));
       const { url: bfUrl, apiKey: bfKey } = blockfrostConfig(network);
       waitForTxOnChain(result.txHash, bfUrl, bfKey, () => {}).then(() => {
         setTxConfirmedToast({ txHash: result.txHash });
@@ -1199,6 +1372,46 @@ export default function DonadaPlatform() {
       notifyRentalConfirmed({ nftName: nft.name ?? nft.assetName, fee: nft.rentalFee != null ? (Number(nft.rentalFee) / 1_000_000).toFixed(2) : '—', renter: payerAddr, owner: '—', txHash: result.txHash });
     } catch (err) {
       console.error('Failed to rent NFT:', err);
+      raiseWalletNotice(err);
+      const code = (err as any)?.code;
+      if (code !== -2 && code !== -3) setRentError(errMsg(err));
+    } finally {
+      setIsRenting(false);
+    }
+  };
+
+  // ----- Renter: budget-based batch rent → one tx for up to BATCH_RENT_CAP NFTs -----
+  const handleBatchRent = async (selection: NftAsset[]) => {
+    if (connectedWallets.length === 0) { closeModal(); setShowConnectPrompt(true); return; }
+    if (selection.length === 0) return;
+    const payerAddr = connectedWalletsRef.current[0].address;
+    closeModal();
+    setIsRenting(true);
+    setRentError(null);
+    try {
+      const result = await withWalletRetry(payerAddr, async () => {
+        const lucid = await initLucid(network);
+        const w = connectedWalletsRef.current[0];
+        selectWallet(lucid, w.api);
+        const validator = await loadRentalValidator(network);
+        return rentNftsBatch(selection.map(n => n.assetName), w.address, validator, lucid);
+      });
+      const n = selection.length;
+      setTxConfirm({ title: n > 1 ? `${n} NFTs Rented!` : 'NFT Rented!', txHash: result.txHash });
+      setNftStats(prev => prev ? { ...prev, openRentals: Math.max(0, prev.openRentals - n), activeRentals: prev.activeRentals + n } : prev);
+      setUserEntries(prev => prev ? { ...prev, renting: prev.renting + n, total: prev.total + n } : prev);
+      // Keep the prefetched cache accurate: these listings are no longer available.
+      const rentedNames = new Set(selection.map(s => s.assetName));
+      setListedNfts(prev => prev.filter(l => !rentedNames.has(l.assetName)));
+      const { url: bfUrl, apiKey: bfKey } = blockfrostConfig(network);
+      waitForTxOnChain(result.txHash, bfUrl, bfKey, () => {}).then(() => {
+        setTxConfirmedToast({ txHash: result.txHash });
+        setTimeout(() => setTxConfirmedToast(null), 8000);
+      }).catch(() => {});
+      const totalFee = selection.reduce((s, x) => s + Number(x.rentalFee ?? 0), 0);
+      notifyRentalConfirmed({ nftName: `${selection[0].name ?? selection[0].assetName} +${n - 1} more`, fee: (totalFee / 1_000_000).toFixed(2), renter: payerAddr, owner: '—', txHash: result.txHash });
+    } catch (err) {
+      console.error('Failed to batch rent:', err);
       raiseWalletNotice(err);
       const code = (err as any)?.code;
       if (code !== -2 && code !== -3) setRentError(errMsg(err));
@@ -1266,6 +1479,12 @@ export default function DonadaPlatform() {
         return updated;
       });
       setUserEntries(prev => prev ? { ...prev, listed: Math.max(0, prev.listed - 1), holding: prev.holding + 1, total: prev.total } : prev);
+      // Keep the prefetched caches accurate: the listing is gone from the
+      // contract and the NFT is on its way back to the owner's wallet.
+      setListedNfts(prev => prev.filter(l => l.assetName !== nft.assetName));
+      setOwnedNfts(prev => prev.some(o => o.assetName === nft.assetName)
+        ? prev
+        : [...prev, { ...nft, rentalFee: undefined, walletKey: ownerAddr }]);
     } catch (err) {
       console.error('Cancel failed:', err);
       raiseWalletNotice(err);
@@ -1370,7 +1589,7 @@ export default function DonadaPlatform() {
         r => ({ source: 'nft_holder' as const, address: r.address, assetId: r.assetId })
       );
       const walletParticipants: DrawParticipant[] = walletAddresses.map(
-        address => ({ source: 'wallet' as const, address, assetId: null })
+        address => ({ source: 'wallet' as const, address, assetId: null as null })
       );
 
       const allParticipants: DrawParticipant[] = [
@@ -1738,7 +1957,7 @@ export default function DonadaPlatform() {
               <div className="nft-image-frame">
                 <div className={`nft-image-inner${featuredNftImage ? ' has-image' : ''}`}>
                   {featuredNftImage
-                    ? <img src={featuredNftImage} alt={collectionName} />
+                    ? <img src={featuredNftImage} alt={collectionName} onError={ipfsImgFallback} />
                     : 'NFT IMAGE'}
                 </div>
                 <div className="nft-details">
@@ -2020,6 +2239,8 @@ export default function DonadaPlatform() {
         nfts={(rentMode ? listedNfts : ownedNfts) as any}
         onClose={closeModal}
         onConfirm={rentMode ? handleRentNft : handleCreateListing}
+        onBatchRent={rentMode ? (handleBatchRent as any) : undefined}
+        batchRentCap={BATCH_RENT_CAP}
         nextDrawDate={nextDrawDate as any}
         countdown={countdown as any}
       />

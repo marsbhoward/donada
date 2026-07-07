@@ -1309,6 +1309,63 @@ body { min-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   letter-spacing: 0.04em;
 }
 
+/* ── Rent modal: budget-based batch rent ──────────────────────────────────── */
+.batch-rent-section {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.18);
+}
+
+.batch-rent-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  flex-wrap: nowrap;
+}
+
+.batch-rent-hint {
+  font-size: 0.72rem;
+  opacity: 0.6;
+  margin: 0.4rem 0 0;
+  text-align: center;
+  width: 100%;
+}
+
+/* ── Listing modal: quantity wheel (matches donada-mint) ──────────────────── */
+.qty-wheel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  user-select: none;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.qty-arrow {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.55rem;
+  line-height: 1;
+  padding: 2px 6px;
+  color: inherit;
+  opacity: 0.45;
+  font-family: inherit;
+}
+
+.qty-arrow:hover:not(:disabled) { opacity: 1; }
+.qty-arrow:disabled { opacity: 0.2; cursor: default; }
+
+.qty-value {
+  font-size: 1.2rem;
+  font-weight: 700;
+  min-width: 1.4em;
+  text-align: center;
+  line-height: 1;
+}
+
 /* Extra breathing room between DONADA link and the toggle beneath it (+25%) */
 /* logo-group .logo padding-bottom removed — now row layout */
 

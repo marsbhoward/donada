@@ -86,9 +86,14 @@ fn lovelace_paid_to(tx: Transaction, recipient: Address) -> Int {
   )
 }
 
-/// Checks that exactly one continuing output exists at the rental contract
-/// address and that its inline datum records the new renter with all other
-/// datum fields unchanged.
+/// Checks that exactly one continuing output at the rental contract address
+/// carries THIS listing's NFT, and that its inline datum records the new
+/// renter with all other datum fields unchanged.
+///
+/// Matching on the unique NFT unit (rather than "exactly one output at the
+/// script address") lets multiple rentals be batched into a single tx — each
+/// script input binds to its own continuing output. It also guarantees the
+/// NFT itself remains locked at the contract.
 fn output_datum_has_renter(
   tx: Transaction,
   script_address: Address,
@@ -98,7 +103,13 @@ fn output_datum_has_renter(
   let continuing_outputs =
     list.filter(
       tx.outputs,
-      fn(output: Output) -> Bool { output.address == script_address },
+      fn(output: Output) -> Bool {
+        output.address == script_address && assets.quantity_of(
+          output.value,
+          original_datum.nft_policy,
+          original_datum.nft_asset_name,
+        ) == 1
+      },
     )
 
   when continuing_outputs is {

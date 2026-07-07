@@ -369,24 +369,35 @@ async function fetchLiveNftHolders(
     if (pageData.length < 100) break;
   }
 
+  // One addresses-lookup per asset — run through a small worker pool instead
+  // of serially (Blockfrost sustains 10 req/s; 5 workers stays well under).
+  const perAsset: Array<Array<{ address: string; assetId: string }>> = new Array(assets.length);
+  let nextIdx = 0;
+  const worker = async () => {
+    while (nextIdx < assets.length) {
+      const i = nextIdx++;
+      const { asset } = assets[i];
+      const assetId = toText(asset.slice(56));
+      const addresses: Array<{ address: string }> = [];
+      for (let page = 1; ; page++) {
+        const pageData = await blockfrostGet<Array<{ address: string }>>(
+          `/assets/${asset}/addresses?page=${page}&count=100`
+        );
+        addresses.push(...pageData);
+        if (pageData.length < 100) break;
+      }
+      perAsset[i] = addresses.map(({ address }) => ({ address, assetId }));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(5, assets.length) }, worker));
+
   const seen = new Set<string>();
   const holders: Array<{ address: string; assetId: string }> = [];
-  for (const { asset } of assets) {
-    const assetId = toText(asset.slice(56));
-    let addresses: Array<{ address: string }> = [];
-    for (let page = 1; ; page++) {
-      const pageData = await blockfrostGet<Array<{ address: string }>>(
-        `/assets/${asset}/addresses?page=${page}&count=100`
-      );
-      addresses = addresses.concat(pageData);
-      if (pageData.length < 100) break;
-    }
-    for (const { address } of addresses) {
-      const key = `${address}:${assetId}`;
-      if (!excludeAddresses.has(address) && !seen.has(key)) {
-        seen.add(key);
-        holders.push({ address, assetId });
-      }
+  for (const { address, assetId } of perAsset.flat()) {
+    const key = `${address}:${assetId}`;
+    if (!excludeAddresses.has(address) && !seen.has(key)) {
+      seen.add(key);
+      holders.push({ address, assetId });
     }
   }
   console.log(`Fetched ${holders.length} live NFT holder(s) from Blockfrost.`);
