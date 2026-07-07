@@ -310,9 +310,18 @@ function markDrawComplete(drawDate: Date, winnerAddress: string): void {
 // ── Blockfrost helpers ────────────────────────────────────────────────────────
 
 async function blockfrostGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${BLOCKFROST_URL}${path}`, { headers: { project_id: BLOCKFROST_KEY } });
-  if (!res.ok) throw new Error(`Blockfrost ${path} → ${res.status}`);
-  return res.json() as Promise<T>;
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${BLOCKFROST_URL}${path}`, { headers: { project_id: BLOCKFROST_KEY } });
+    if (res.ok) return res.json() as Promise<T>;
+    // 429 = rate limit, 5xx = Blockfrost hiccup — both transient, retry with backoff
+    if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+      await new Promise(r => setTimeout(r, 1_000 * (attempt + 1)));
+      continue;
+    }
+    const err = new Error(`Blockfrost ${path} → ${res.status}`) as Error & { status: number };
+    err.status = res.status;
+    throw err;
+  }
 }
 
 async function waitForTxConfirmed(txHash: string, maxWaitMs = 120_000): Promise<void> {
@@ -353,10 +362,10 @@ async function fetchLiveNftHolders(
       );
     } catch (err) {
       // 404 means no assets minted under this policy yet
-      if ((err as Error).message.includes('404')) break;
+      if ((err as { status?: number }).status === 404) break;
       throw err;
     }
-    assets = assets.concat(pageData);
+    assets.push(...pageData);
     if (pageData.length < 100) break;
   }
 
@@ -384,13 +393,19 @@ async function fetchLiveNftHolders(
   return holders;
 }
 
-function loadWalletParticipants(): string[] {
+// Accepts Shelley (addr1/addr_test1) and Byron (Ddz/Ae2) addresses. Anything
+// else — Solana entries, typos — is dropped here: winner selection is
+// deterministic, so an unpayable winner would fail identically on every cron
+// retry and permanently stall the draw.
+const PAYABLE_ADDRESS = /^(addr(_test)?1[0-9a-z]{20,}|(Ddz|Ae2)[1-9A-HJ-NP-Za-km-z]{20,})$/;
+
+function loadWalletParticipants(exclude: Set<string>): string[] {
   try {
-    const path = SOCIALS_CSV_PATH;
     const seen = new Set<string>();
-    return readFileSync(path, 'utf-8').trim().split('\n').slice(1)
+    return readFileSync(SOCIALS_CSV_PATH, 'utf-8').trim().split('\n').slice(1)
       .map(l => l.trim().replace(/^"|"$/g, ''))
-      .filter(l => l.length > 0)
+      .filter(a => PAYABLE_ADDRESS.test(a))
+      .filter(a => !exclude.has(a))
       .filter(a => { if (seen.has(a)) return false; seen.add(a); return true; });
   } catch { return []; }
 }
@@ -485,7 +500,9 @@ async function main() {
     r => ({ source: 'nft_holder' as const, address: r.address, assetId: r.assetId })
   );
 
-  const walletParticipants: DrawParticipant[] = loadWalletParticipants().map(
+  const walletParticipants: DrawParticipant[] = loadWalletParticipants(
+    new Set([contractAddress, PROJECT_WALLET_ADDRESS])
+  ).map(
     address => ({ source: 'wallet' as const, address, assetId: null })
   );
 
@@ -501,25 +518,23 @@ async function main() {
   // Byron had 20s slots; Shelley onward is 1s. We must account for the era
   // transition rather than using the Byron genesis start with slot_length=1.
   const ERA: Record<string, { shelleySlot: number; shelleyUnix: number }> = {
-    Mainnet: { shelleySlot: 4_492_800, shelleyUnix: 1_596_059_091 },
-    Preview: { shelleySlot: 0,         shelleyUnix: 1_563_999_616 },
+    Mainnet: { shelleySlot: 4_492_800, shelleyUnix: 1_596_059_091 }, // Shelley HF 2020-07-29
+    Preview: { shelleySlot: 0,         shelleyUnix: 1_666_656_000 }, // Preview genesis 2022-10-25
   };
   const era = ERA[NETWORK] ?? ERA.Mainnet;
   const drawUnix = Math.floor(scheduled.date.getTime() / 1000);
   const drawSlot = era.shelleySlot + Math.max(0, drawUnix - era.shelleyUnix);
   console.log(`Draw slot: ${drawSlot}`);
 
-  // Use the next block after the draw slot — Blockfrost /blocks/slot/:slot returns the
-  // first block at or after that slot, so a single call is sufficient.
+  // Blockfrost /blocks/slot/:slot returns the block at that EXACT slot (404 if
+  // the slot was empty), so walk forward until one is found. At mainnet's ~5%
+  // active-slot coefficient, 600 slots (~10 min of chain) makes a miss
+  // vanishingly unlikely. Non-404 errors abort rather than silently skipping a
+  // slot that does have a block, which would shift the entropy source.
   let entropyBlock: { hash: string; slot: number } | null = null;
-  try {
-    entropyBlock = await blockfrostGet<{ hash: string; slot: number }>(`/blocks/slot/${drawSlot}`);
-  } catch {
-    // Some slots have no block — walk forward up to 150 slots (~2.5 min) to find one
-    for (let s = drawSlot + 1; s <= drawSlot + 150 && !entropyBlock; s++) {
-      try { entropyBlock = await blockfrostGet<{ hash: string; slot: number }>(`/blocks/slot/${s}`); }
-      catch { /* empty slot — try next */ }
-    }
+  for (let s = drawSlot; s <= drawSlot + 600 && !entropyBlock; s++) {
+    try { entropyBlock = await blockfrostGet<{ hash: string; slot: number }>(`/blocks/slot/${s}`); }
+    catch (err) { if ((err as { status?: number }).status !== 404) throw err; }
   }
   if (!entropyBlock) throw new Error('Could not find a block at the draw slot.');
   console.log(`Entropy block hash: ${entropyBlock.hash}`);
@@ -553,13 +568,21 @@ async function main() {
   console.log(`Asset ID:       ${winner.assetId ?? '(wallet entry)'}`);
 
   // Step 6 — Payout
-  const prizeLovelace = BigInt((process.env.PRIZE_LOVELACE ?? '').replace(/[^0-9]/g, '') || '0');
+  // Strict format: digits with optional comma/underscore/space separators.
+  // Stripping arbitrary characters would silently corrupt a decimal typo
+  // ("100.5" → 1005), so anything else is rejected outright.
+  const prizeRaw = (process.env.PRIZE_LOVELACE ?? '').trim();
+  if (!/^[0-9][0-9,_ ]*$/.test(prizeRaw)) {
+    throw new Error('PRIZE_LOVELACE must be a whole number of lovelace (separators , _ allowed — no decimals).');
+  }
+  const prizeLovelace = BigInt(prizeRaw.replace(/[^0-9]/g, ''));
   if (prizeLovelace === 0n) throw new Error('PRIZE_LOVELACE env var not set or zero.');
 
+  const FEE_HEADROOM  = 2_000_000n; // tx fee + min-ADA change output
   const walletUtxos   = await lucid.wallet().getUtxos();
   const walletBalance = walletUtxos.reduce((sum, u) => sum + (u.assets.lovelace ?? 0n), 0n);
-  if (walletBalance < prizeLovelace) {
-    throw new Error(`Insufficient balance: ${walletBalance} lovelace available, ${prizeLovelace} required.`);
+  if (walletBalance < prizeLovelace + FEE_HEADROOM) {
+    throw new Error(`Insufficient balance: ${walletBalance} lovelace available, ${prizeLovelace + FEE_HEADROOM} required (prize + fee headroom).`);
   }
 
   const activeRenter = winner.source === 'rental' ? (winner.rental.datum.renter ?? null) : null;
@@ -573,20 +596,34 @@ async function main() {
     console.log(`Winner (100%): ${prizeLovelace} lovelace → ${winner.address}`);
   }
 
-  // Step 7 — Build, sign, submit payout
-  let tx = lucid.newTx().pay.ToAddress(winner.address, { lovelace: ownerShare });
-  if (activeRenter) tx = tx.pay.ToAddress(activeRenter, { lovelace: renterShare });
-  tx = tx.addSigner(PROJECT_WALLET_ADDRESS);
+  // Step 7 — Record completion FIRST, then pay.
+  // The CSV "complete" flag is the only thing stopping the 15-minute cron from
+  // re-executing this draw. Committing it before the payout means a failure
+  // beyond this point can never trigger a second payout — the worst case is a
+  // recorded-but-unpaid winner (recoverable manually from winners.csv), which
+  // beats an automatic repeat payout on every subsequent cron run.
+  markDrawComplete(scheduled.date, winner.address);
 
-  const built  = await tx.complete();
-  const signed = await built.sign.withWallet().complete();
-  const txHash = await signed.submit();
+  let txHash: string;
+  try {
+    let tx = lucid.newTx().pay.ToAddress(winner.address, { lovelace: ownerShare });
+    if (activeRenter) tx = tx.pay.ToAddress(activeRenter, { lovelace: renterShare });
+    tx = tx.addSigner(PROJECT_WALLET_ADDRESS);
+
+    const built  = await tx.complete();
+    const signed = await built.sign.withWallet().complete();
+    txHash = await signed.submit();
+  } catch (err) {
+    throw new Error(
+      `PAYOUT FAILED after draw was marked complete — winner ${winner.address} ` +
+      `is recorded in winners.csv but UNPAID. Send ${prizeLovelace} lovelace manually. Cause: ${err}`
+    );
+  }
   console.log(`\nPayout submitted. Tx hash: ${txHash}`);
 
   await waitForTxConfirmed(txHash);
   await waitForUtxoIndexed(PROJECT_WALLET_ADDRESS, txHash);
 
-  markDrawComplete(scheduled.date, winner.address);
   await notifyDrawComplete({ source: winner.source, address: winner.address, assetId: winner.assetId ?? null, drawDate: scheduled.date, txHash });
   console.log('Draw complete!');
 

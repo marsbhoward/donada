@@ -1,5 +1,12 @@
 name: Execute Draw
 
+# Never allow two draw runs to overlap — a run that waits through tx
+# confirmations can outlast the 15-minute cron interval, and a concurrent
+# run would see the draw still marked incomplete and pay out a second time.
+concurrency:
+  group: execute-draw
+  cancel-in-progress: false
+
 env:
   SCHEDULED_NETWORK: Mainnet
 
@@ -42,7 +49,7 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run draw script
         run: npx tsx "claude code/draw_script.ts"
