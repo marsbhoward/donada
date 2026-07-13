@@ -1,0 +1,22 @@
+skip_local_validator = true
+
+[toolchain]
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+donada_rental = "8o1sEGV2TnVChXZTkMvnj5HGEhTmvMi7ih3YRvgzBumh"
+
+[programs.devnet]
+donada_rental = "8o1sEGV2TnVChXZTkMvnj5HGEhTmvMi7ih3YRvgzBumh"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "cargo test"
+
+[hooks]
