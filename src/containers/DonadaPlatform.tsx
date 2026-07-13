@@ -598,7 +598,7 @@ function errMsg(err: unknown): string {
 
 // Brand colours for common Cardano wallets — used as border/glow on hover.
 const WALLET_BRAND_COLORS: Record<string, string> = {
-  eternl:     '#1d2d50',
+  eternl:     '#17d1aa',
   lace:       '#7b4dff',
   nami:       '#349ea3',
   yoroi:      '#1a44b7',
@@ -628,18 +628,41 @@ const WALLET_DOWNLOADS: { key: string; name: string; url: string }[] = [
   { key: 'begin',      name: 'Begin',      url: 'https://begin.is' },
 ];
 
+// Display names for known injection keys — used instead of the wallet's
+// self-reported `name`, which impersonating wallets misreport (e.g. VESPR
+// injecting under window.cardano.lace names itself "VESPR", hiding Lace).
+const KEY_DISPLAY_NAMES: Record<string, string> = Object.fromEntries(
+  WALLET_DOWNLOADS.map(w => [w.key, w.name])
+);
+
+// Lists strictly what is injected: one entry per window.cardano key, labelled
+// by the key itself. When the injector's self-reported name doesn't match the
+// key it occupies (an impersonating wallet), its icon is untrusted too — the
+// picker falls back to the lettered badge rather than showing the wrong logo.
 function getAvailableWallets(): WalletInfo[] {
   if (!window.cardano) return [];
   return Object.entries(window.cardano as Record<string, { enable?: unknown; name?: string; icon?: string }>)
     .filter(([, w]) => w && typeof w.enable === 'function')
-    .map(([key, w]) => ({ key, name: w.name || key, icon: w.icon || null }));
+    .map(([key, w]) => {
+      const selfName = (w.name || '').toLowerCase();
+      const impersonated = selfName !== '' && selfName !== key && !selfName.includes(key);
+      return {
+        key,
+        name: KEY_DISPLAY_NAMES[key] ?? key.charAt(0).toUpperCase() + key.slice(1),
+        icon: impersonated ? null : (w.icon || null),
+      };
+    });
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
+// Build-time network default: `npm start` reads .env.development (Preview),
+// `npm run build` reads .env.production (Mainnet). No code edits to switch.
+const DEFAULT_NETWORK: Network = process.env.REACT_APP_NETWORK === 'Preview' ? 'Preview' : 'Mainnet';
+
 export default function DonadaPlatform() {
-  // Network (toggled in admin panel; defaults to Mainnet for production)
-  const [network, setNetwork] = useState<Network>('Preview');
+  // Network (build-time default above; still toggleable in the admin panel)
+  const [network, setNetwork] = useState<Network>(DEFAULT_NETWORK);
 
   // Draw date / countdown
   const [nextDrawDate, setNextDrawDate] = useState<Date | null>(null);
@@ -1904,7 +1927,8 @@ export default function DonadaPlatform() {
                   <button
                     key={w.key}
                     className="wallet-dropdown-item"
-                    onClick={() => { console.log('[picker] clicked', w.key); connectWallet(w.key); }}
+                    style={{ '--wallet-color': WALLET_BRAND_COLORS[w.key] ?? '#888' } as React.CSSProperties}
+                    onClick={() => connectWallet(w.key)}
                   >
                     {w.icon
                       ? <img src={w.icon} alt={w.name} className="wallet-dropdown-icon" />

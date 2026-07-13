@@ -57,7 +57,7 @@ const BLOCKFROST_KEY = NETWORK === 'Preview'
 const PROJECT_WALLET_ADDRESS = NETWORK === 'Mainnet'
   ? 'addr1qxe9axlq4re87nmdzxz3ya8kl768gje8le3qkm285vqgu742dr25m5q8guvug3f5az3aprznessarfr0xpdlvxqpmcjqdrky5q'
   : 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
-const DONADA_POLICY_ID       = 'f3cfe3e83aa282cde0f6d67e79860ccaa55969a4b685db614055fc2f';
+const DONADA_POLICY_ID       = '35f3894cda3f586d67494f1ddfb8b7f309401dd3c71fcd2d5c591b5c';
 
 const EMAILJS_SERVICE_ID  = process.env.REACT_APP_EMAILJS_SERVICE_ID  ?? '';
 const EMAILJS_TEMPLATE_ID = process.env.REACT_APP_EMAILJS_TEMPLATE_ID ?? '';
