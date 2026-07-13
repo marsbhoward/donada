@@ -15,7 +15,7 @@ import {
 // ── Contract constants ────────────────────────────────────────────────────────
 
 // Legacy policy ID (DonodaNFT001–003): 21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a
-const DONADA_POLICY_ID   = '474b3f587a9eca8fecd1c0525f61e63e5124b0ec535a3b70072ea5de';
+const DONADA_POLICY_ID   = '35f3894cda3f586d67494f1ddfb8b7f309401dd3c71fcd2d5c591b5c';
 
 const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
@@ -930,22 +930,29 @@ export default function DonadaPlatform() {
         const drawLines = (await drawRes.text()).trim().split('\n').slice(1);
         const incomplete = drawLines
           .map(line => {
-            const [, dateStr, timeStr, completedRaw] = line.split(',');
+            const [collection, dateStr, timeStr, completedRaw] = line.split(',');
             if (!dateStr || !timeStr) return null;
             const date = parseTimeStr(dateStr, timeStr);
             if (!date) return null;
             const complete = completedRaw?.replace(/[^a-z]/gi, '').toLowerCase() === 'y';
-            return { date, complete };
+            // Giveaway rows are executed by the draw automation like any other,
+            // but must not drive the public countdown or listing expiry.
+            // ("give" also matches the "Giveway" spelling already in the CSV.)
+            const isGiveaway = (collection ?? '').toLowerCase().includes('give');
+            return { date, complete, isGiveaway };
           })
-          .filter((r): r is { date: Date; complete: boolean } => r !== null && !r.complete)
+          .filter((r): r is { date: Date; complete: boolean; isGiveaway: boolean } => r !== null && !r.complete)
           .sort((a, b) => a.date.getTime() - b.date.getTime());
 
+        // scheduledDrawDate stays unfiltered so the admin panel can still arm
+        // and execute a pending giveaway manually if the automation fails.
         if (incomplete.length > 0) {
           setScheduledDrawDate(incomplete[0].date);
           setDrawPlanned(true);
         }
 
-        const nextIncomplete = incomplete.find(r => r.date > now);
+        // Countdown + listing expiry track the next COLLECTION draw only.
+        const nextIncomplete = incomplete.find(r => r.date > now && !r.isGiveaway);
         if (nextIncomplete) {
           setNextDrawDate(nextIncomplete.date);
           // Only clear winner if the new draw is on the same calendar day as the last draw.
