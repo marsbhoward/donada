@@ -55,7 +55,7 @@ const BLOCKFROST_KEY = NETWORK === 'Preview'
   : (process.env.REACT_APP_BlockFrost_API_KEY_Mainnet ?? '');
 
 const PROJECT_WALLET_ADDRESS = NETWORK === 'Mainnet'
-  ? 'addr1qxapfn0j8n8swqfkhckmphq9mnv5l0d66k38pwqj0jefe67dgc28mqaj8z8wvmzhllx2gfnueeuvcc8mm3e2q0pmv79sjyhcpy'
+  ? 'addr1q8xuu5fx95hrzcmmxejuamkqthahqeuxw73mcqsf2zm6c43ltqhnxcmr9tklxnv74rznp42qzkppt7jjrqt7kwlnjazsj2fccf'
   : 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
 const DONADA_POLICY_ID       = '35f3894cda3f586d67494f1ddfb8b7f309401dd3c71fcd2d5c591b5c';
 

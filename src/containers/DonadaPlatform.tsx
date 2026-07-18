@@ -21,7 +21,7 @@ const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
 const POLICY_IDS         = [DONADA_POLICY_ID, PARTNER_POLICY_ID].filter(Boolean) as string[];
 const PROJECT_WALLET: Record<string, string> = {
-  Mainnet: 'addr1qxe9axlq4re87nmdzxz3ya8kl768gje8le3qkm285vqgu742dr25m5q8guvug3f5az3aprznessarfr0xpdlvxqpmcjqdrky5q',
+  Mainnet: 'addr1q8xuu5fx95hrzcmmxejuamkqthahqeuxw73mcqsf2zm6c43ltqhnxcmr9tklxnv74rznp42qzkppt7jjrqt7kwlnjazsj2fccf',
   Preview: 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388',
 };
 
