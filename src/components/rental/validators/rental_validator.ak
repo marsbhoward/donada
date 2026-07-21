@@ -48,8 +48,12 @@ pub type RentalDatum {
   /// Cardano POSIX time in milliseconds. After this time the owner or draw
   /// contract can reclaim the NFT.
   draw_date: Int,
-  /// Donada treasury address. Receives 10% of rental_fee on every Rent tx.
-  project_wallet: Address,
+  /// Receives 10% of rental_fee on every Rent tx (the project's cold fees/
+  /// treasury wallet). Payment destination only — never used as a signer.
+  fee_recipient: Address,
+  /// May co-sign ClaimBack after draw_date, alongside the owner. This is the
+  /// automated draw/hot wallet — signer only, never receives funds here.
+  claim_authority: Address,
 }
 
 /// The three actions that can be performed on a rental contract UTXO.
@@ -123,7 +127,8 @@ fn output_datum_has_renter(
           let owner_unchanged  = updated_datum.owner          == original_datum.owner
           let fee_unchanged    = updated_datum.rental_fee     == original_datum.rental_fee
           let date_unchanged   = updated_datum.draw_date      == original_datum.draw_date
-          let wallet_unchanged = updated_datum.project_wallet == original_datum.project_wallet
+          let recipient_unchanged = updated_datum.fee_recipient   == original_datum.fee_recipient
+          let authority_unchanged = updated_datum.claim_authority == original_datum.claim_authority
 
           renter_set       &&
           policy_unchanged &&
@@ -131,7 +136,8 @@ fn output_datum_has_renter(
           owner_unchanged  &&
           fee_unchanged    &&
           date_unchanged   &&
-          wallet_unchanged
+          recipient_unchanged &&
+          authority_unchanged
         }
         _ -> False
       }
@@ -204,15 +210,15 @@ validator rental {
       }
 
       // ── Rent ───────────────────────────────────────────────────────────────
-      // Renter pays rental_fee; fee split 90/10 between owner and project wallet.
+      // Renter pays rental_fee; fee split 90% owner / 10% fee_recipient.
       // NFT stays locked with datum updated to record the renter's address.
       Rent { renter_address } -> {
         let no_existing_renter = datum.renter == None
         let before_deadline    = tx_upper_bound(tx) < datum.draw_date
         let owner_minimum      = datum.rental_fee * 90 / 100
         let project_minimum    = datum.rental_fee * 10 / 100
-        let owner_receives     = lovelace_paid_to(tx, datum.owner)          >= owner_minimum
-        let project_receives   = lovelace_paid_to(tx, datum.project_wallet) >= project_minimum
+        let owner_receives     = lovelace_paid_to(tx, datum.owner)         >= owner_minimum
+        let project_receives   = lovelace_paid_to(tx, datum.fee_recipient) >= project_minimum
         let datum_updated      =
           output_datum_has_renter(tx, script_address, datum, renter_address)
 
@@ -226,7 +232,7 @@ validator rental {
       // ── ClaimBack ──────────────────────────────────────────────────────────
       // Three valid scenarios:
       //   a. draw_date passed AND owner signs (independent owner reclaim)
-      //   b. draw_date passed AND project wallet signs (automated post-draw cleanup)
+      //   b. draw_date passed AND claim_authority signs (automated post-draw cleanup)
       //   c. draw contract is present as a tx input (future bulk-return contract)
       ClaimBack -> {
         let deadline_passed = tx_lower_bound(tx) > datum.draw_date
@@ -235,15 +241,15 @@ validator rental {
             VerificationKey(pkh) -> list.has(tx.extra_signatories, pkh)
             _ -> False
           }
-        let signed_by_project =
-          when datum.project_wallet.payment_credential is {
+        let signed_by_authority =
+          when datum.claim_authority.payment_credential is {
             VerificationKey(pkh) -> list.has(tx.extra_signatories, pkh)
             _ -> False
           }
         let called_by_draw_contract = draw_contract_in_inputs(tx)
 
         ( deadline_passed && signed_by_owner ) ||
-        ( deadline_passed && signed_by_project ) ||
+        ( deadline_passed && signed_by_authority ) ||
         called_by_draw_contract
       }
     }

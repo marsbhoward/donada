@@ -57,7 +57,9 @@ const BLOCKFROST_KEY = NETWORK === 'Preview'
 const PROJECT_WALLET_ADDRESS = NETWORK === 'Mainnet'
   ? 'addr1q8xuu5fx95hrzcmmxejuamkqthahqeuxw73mcqsf2zm6c43ltqhnxcmr9tklxnv74rznp42qzkppt7jjrqt7kwlnjazsj2fccf'
   : 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388';
-const DONADA_POLICY_ID       = '35f3894cda3f586d67494f1ddfb8b7f309401dd3c71fcd2d5c591b5c';
+const DONADA_POLICY_ID       = NETWORK === 'Mainnet'
+  ? '35f3894cda3f586d67494f1ddfb8b7f309401dd3c71fcd2d5c591b5c'
+  : '02a5ac7bd4faa550c68a24146130f6f4666a76427acac05365e166ed';
 
 const EMAILJS_SERVICE_ID  = process.env.REACT_APP_EMAILJS_SERVICE_ID  ?? '';
 const EMAILJS_TEMPLATE_ID = process.env.REACT_APP_EMAILJS_TEMPLATE_ID ?? '';
@@ -111,7 +113,8 @@ interface RentalDatum {
   renter:             string | null;
   rental_fee:         bigint;
   draw_date:          bigint;
-  project_wallet:     string;
+  fee_recipient:      string;
+  claim_authority:    string;
 }
 
 type DrawParticipant =
@@ -167,7 +170,8 @@ function decodeDatum(utxo: UTxO): RentalDatum {
     renter:             renterConstr.index === 0 ? dataToAddress(renterConstr.fields[0]) : null,
     rental_fee:         BigInt(f[4] as bigint),
     draw_date:          BigInt(f[5] as bigint),
-    project_wallet:     dataToAddress(f[6]),
+    fee_recipient:      dataToAddress(f[6]),
+    claim_authority:    dataToAddress(f[7]),
   };
 }
 

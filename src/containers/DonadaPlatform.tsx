@@ -15,13 +15,27 @@ import {
 // ── Contract constants ────────────────────────────────────────────────────────
 
 // Legacy policy ID (DonodaNFT001–003): 21b36156acd6aaea44bf6b7c9ed3cbb818e74794a6081b32a267358a
-const DONADA_POLICY_ID   = '35f3894cda3f586d67494f1ddfb8b7f309401dd3c71fcd2d5c591b5c';
+// Network-split: resolved by build network (npm start → Preview, build → Mainnet).
+const DONADA_POLICY_IDS: Record<string, string> = {
+  Mainnet: '35f3894cda3f586d67494f1ddfb8b7f309401dd3c71fcd2d5c591b5c',
+  Preview: '02a5ac7bd4faa550c68a24146130f6f4666a76427acac05365e166ed',
+};
+const DONADA_POLICY_ID   = DONADA_POLICY_IDS[process.env.REACT_APP_NETWORK === 'Preview' ? 'Preview' : 'Mainnet'];
 
 const COLLECTION_FALLBACK = 'DONADA';
 const PARTNER_POLICY_ID  = ''; // fill in partner policy ID when available
 const POLICY_IDS         = [DONADA_POLICY_ID, PARTNER_POLICY_ID].filter(Boolean) as string[];
+// Hot wallet — signs automated draws + claim-back, and is the listing datum's
+// claim_authority. Never the fee destination.
 const PROJECT_WALLET: Record<string, string> = {
   Mainnet: 'addr1q8xuu5fx95hrzcmmxejuamkqthahqeuxw73mcqsf2zm6c43ltqhnxcmr9tklxnv74rznp42qzkppt7jjrqt7kwlnjazsj2fccf',
+  Preview: 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388',
+};
+
+// Royalties cold wallet — receives the 10% rental fee (fee_recipient in the
+// datum). Receive-only; never signs. Preview reuses the test wallet.
+const RENTAL_FEE_RECIPIENT: Record<string, string> = {
+  Mainnet: 'addr1qxswqksyp9mtg6pskhn9tvkeund377ujht6wcg6xutx2uxklv6yuasrfp090rqfegy3346xc5rs5lzefgarf7trqrm4st2tuk8',
   Preview: 'addr_test1qz8a7xrhfh845uw0qvcvkll6m4p2ntyexghz2etpk4gpknm8x3f9dwp37v9xese67nv0nnczvkzqh60z30n6v9cw2fasq4l388',
 };
 
@@ -101,7 +115,8 @@ interface RentalDatum {
   renter: string | null; // null = no renter registered yet
   rental_fee: bigint;
   draw_date: bigint;
-  project_wallet: string;
+  fee_recipient: string;   // receives the 10% rental fee (cold treasury)
+  claim_authority: string; // may sign automated claim-back (hot wallet)
 }
 
 interface InteractionResult {
@@ -191,7 +206,8 @@ function encodeDatum(datum: RentalDatum): string {
         : new Constr(1, []),
       datum.rental_fee,
       datum.draw_date,
-      addressToData(datum.project_wallet),
+      addressToData(datum.fee_recipient),
+      addressToData(datum.claim_authority),
     ])
   );
 }
@@ -211,7 +227,8 @@ function decodeDatum(utxo: UTxO): RentalDatum {
     renter,
     rental_fee:     f[4] as bigint,
     draw_date:      f[5] as bigint,
-    project_wallet: dataToAddress(f[6]),
+    fee_recipient:   dataToAddress(f[6]),
+    claim_authority: dataToAddress(f[7]),
   };
 }
 
@@ -247,7 +264,8 @@ async function submitListing(
       renter:         null,
       rental_fee:     adaToLovelace(rental_fee_ada),
       draw_date:      BigInt(drawDateMs),
-      project_wallet: PROJECT_WALLET[network],
+      fee_recipient:   RENTAL_FEE_RECIPIENT[network],
+      claim_authority: PROJECT_WALLET[network],
     };
     txBuilder = txBuilder.pay.ToContract(
       contractAddress,
@@ -299,9 +317,9 @@ async function rentNft(
     throw new Error(`"${nftAssetName}" draw date has passed — this listing can no longer be rented.`);
   }
 
-  // 90% to owner, 10% to project; integer division matches the on-chain validator.
+  // 90% to owner, 10% to the fee recipient; integer division matches the on-chain validator.
   const ownerShare   = datum.rental_fee * BigInt(90) / BigInt(100);
-  const projectShare = datum.rental_fee - ownerShare;
+  const feeShare     = datum.rental_fee - ownerShare;
   const updatedDatum: RentalDatum = { ...datum, renter: renterAddress };
 
   // validTo must be strictly before draw_date (validator: tx_upper_bound < draw_date).
@@ -321,8 +339,8 @@ async function rentNft(
         [DONADA_POLICY_ID + fromText(nftAssetName)]: BigInt(1),
       }
     )
-    .pay.ToAddress(datum.owner,          { lovelace: ownerShare })
-    .pay.ToAddress(datum.project_wallet, { lovelace: projectShare })
+    .pay.ToAddress(datum.owner,         { lovelace: ownerShare })
+    .pay.ToAddress(datum.fee_recipient, { lovelace: feeShare })
     .addSigner(renterAddress)
     .validTo(validTo)
     .complete();
@@ -369,14 +387,14 @@ async function rentNftsBatch(
   }
 
   // Aggregate fee payouts per address: the validator sums all outputs to an
-  // address, so one combined output per owner (and one for the project
-  // wallet) satisfies every input while keeping the tx small.
+  // address, so one combined output per owner (and one per fee recipient)
+  // satisfies every input while keeping the tx small.
   const payouts = new Map<string, bigint>();
   const addPayout = (addr: string, amt: bigint) => payouts.set(addr, (payouts.get(addr) ?? 0n) + amt);
   for (const { datum } of rentals) {
     const ownerShare = datum.rental_fee * 90n / 100n;
     addPayout(datum.owner, ownerShare);
-    addPayout(datum.project_wallet, datum.rental_fee - ownerShare);
+    addPayout(datum.fee_recipient, datum.rental_fee - ownerShare);
   }
 
   // validTo must precede the EARLIEST draw date in the batch.
