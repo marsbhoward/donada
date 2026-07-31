@@ -17,7 +17,7 @@
 //   OWNER_SEED_PHRASE="word1 word2 ... word24"
 //
 // Run:
-//   npx tsx "claude code/mint_test_nft.ts"
+//   npx tsx "scripts/mint_test_nft.ts"
 //
 // After running, copy the printed Policy ID into DonadaPlatform.tsx as DONADA_POLICY_ID.
 // =============================================================================

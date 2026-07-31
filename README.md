@@ -118,9 +118,10 @@ public/data/
 src/containers/
   NewHome2.tsx            — main application interface
 
-claude code/
+scripts/
   draw_script.ts          — server-side draw execution (used by GitHub Actions)
   mint_test_nft.ts        — testnet NFT minting utility
+  upload_images.ts        — IPFS image upload utility
 
 src/components/rental/
   validators/             — Aiken smart contract source

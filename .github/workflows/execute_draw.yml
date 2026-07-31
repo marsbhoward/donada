@@ -52,7 +52,7 @@ jobs:
         run: npm ci
 
       - name: Run draw script
-        run: npx tsx "claude code/draw_script.ts"
+        run: npx tsx "scripts/draw_script.ts"
         env:
           NETWORK: ${{ github.event.inputs.network || env.SCHEDULED_NETWORK }}
           OWNER_SEED_PHRASE: ${{ secrets.OWNER_SEED_PHRASE }}

@@ -8,7 +8,7 @@
 //   BLOCKFROST_IPFS_KEY=ipfsXXX  (add to .env or pass inline)
 //
 // Run:
-//   npx tsx "claude code/upload_images.ts"
+//   npx tsx "scripts/upload_images.ts"
 // =============================================================================
 
 import { readFileSync, readdirSync } from 'fs';
